@@ -26,11 +26,46 @@ pub fn store(c: &Connection, game: Option<&Path>, png: Option<&[u8]>) -> Result<
 }
 
 /// An explicit launcher upload may replace a user icon once, after preserving it.
-pub fn store_branding(c: &Connection, game: &Path, png: Option<&[u8]>, explicit: bool) -> Result<()> {
+pub fn store_branding(
+    c: &Connection,
+    game: &Path,
+    png: Option<&[u8]>,
+    explicit: bool,
+) -> Result<()> {
     store_projection(c, Some(game), png, explicit)
 }
 
-fn store_projection(c: &Connection, game: Option<&Path>, png: Option<&[u8]>, replace: bool) -> Result<()> {
+/// Suppress the file present at clear time without taking ownership of it.
+/// The caller supplies the precondition for a clear targeting a manual icon.
+pub fn clear_branding(
+    c: &Connection,
+    game: &Path,
+    matches_current: impl FnOnce(Option<&[u8]>) -> bool,
+) -> Result<bool> {
+    let game = canonical_game(game)?;
+    let current = read_icon_bounded(&game.join(FILE_NAME), MAX_GAME_ICON_BYTES)?;
+    let icon = match &current {
+        Current::Present(icon) => Some(icon),
+        _ => None,
+    };
+    let known = known_icons(c, &game)?;
+    if !matches_current(icon.and_then(|icon| known.user_png(icon))) {
+        return Ok(false);
+    }
+    store_branding(c, &game, None, false)?;
+    c.execute(
+        "UPDATE server_icon SET ignored_user=? WHERE singleton=1",
+        [icon.map(|icon| &icon.id)],
+    )?;
+    Ok(true)
+}
+
+fn store_projection(
+    c: &Connection,
+    game: Option<&Path>,
+    png: Option<&[u8]>,
+    replace: bool,
+) -> Result<()> {
     ensure_table(c)?;
     let game = game
         .map(|path| path.to_str().ok_or_else(unavailable))
@@ -44,7 +79,9 @@ fn store_projection(c: &Connection, game: Option<&Path>, png: Option<&[u8]>, rep
              WHEN game=excluded.game AND png IS excluded.png THEN replace_user ELSE 0 END,
          owner=CASE WHEN excluded.game IS NULL OR game=excluded.game THEN owner END,
          next_owner=CASE WHEN excluded.game IS NULL OR game=excluded.game THEN next_owner END,
-         stage=CASE WHEN excluded.game IS NULL OR game=excluded.game THEN stage END",
+         stage=CASE WHEN excluded.game IS NULL OR game=excluded.game THEN stage END,
+         ignored_user=CASE WHEN excluded.game IS NULL OR game=excluded.game THEN ignored_user END,
+         observed_user=CASE WHEN excluded.game IS NULL OR game=excluded.game THEN observed_user END",
         params![game, game.is_some(), png, replace && png.is_some()],
     )?;
     Ok(())
@@ -57,7 +94,8 @@ fn ensure_table(c: &Connection) -> Result<()> {
             game TEXT, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
             png BLOB CHECK(length(png)<=17408),
             owner TEXT, next_owner TEXT, stage TEXT,
-            replace_user INTEGER NOT NULL DEFAULT 0 CHECK(replace_user IN (0,1))
+            replace_user INTEGER NOT NULL DEFAULT 0 CHECK(replace_user IN (0,1)),
+            ignored_user TEXT, observed_user TEXT
         ) STRICT;",
     )?;
     Ok(())
@@ -76,37 +114,121 @@ pub(crate) fn migrate(c: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Read a user-supplied icon, excluding both possible projected file identities.
-pub fn user_icon(db: &crate::StateDatabase, game: &Path) -> Result<Option<Vec<u8>>> {
+pub(crate) fn migrate_user_observation(c: &Connection) -> Result<()> {
+    if table_exists(c)? {
+        c.execute_batch(
+            "ALTER TABLE server_icon ADD COLUMN ignored_user TEXT;
+                         ALTER TABLE server_icon ADD COLUMN observed_user TEXT;",
+        )?;
+    }
+    Ok(())
+}
+
+fn canonical_game(game: &Path) -> Result<std::path::PathBuf> {
     reject_linked_directories(game, "state_server_icon_unavailable")?;
     require_directory(game)?;
-    let game = fs::canonicalize(game)?;
-    let game_path = game.to_str().ok_or_else(unavailable)?;
-    db.read(|c| {
-        let exists: bool = c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='server_icon' AND type='table')",
-            [],
-            |row| row.get(0),
-        )?;
-        let owned = if exists {
-            c.query_row(
-                "SELECT owner,next_owner,replace_user FROM server_icon WHERE singleton=1 AND game=?",
-                [game_path],
-                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, bool>(2)?)),
-            ).optional()?.unwrap_or_default()
-        } else {
-            (None, None, false)
-        };
-        let Current::Present(icon) = read_icon_bounded(&game.join(FILE_NAME), MAX_GAME_ICON_BYTES)? else {
-            return Ok(None);
-        };
-        if owned.2 || owned.0.as_ref() == Some(&icon.id) || owned.1.as_ref() == Some(&icon.id) {
-            return Ok(None);
+    Ok(fs::canonicalize(game)?)
+}
+
+fn table_exists(c: &Connection) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='server_icon' AND type='table')",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+#[derive(Default)]
+struct KnownIcons {
+    owner: Option<String>,
+    next_owner: Option<String>,
+    ignored_user: Option<String>,
+    replace_user: bool,
+    observed_user: Option<String>,
+}
+
+impl KnownIcons {
+    fn user_png<'a>(&self, icon: &'a Icon) -> Option<&'a [u8]> {
+        if self.replace_user
+            || self.owner.as_ref() == Some(&icon.id)
+            || self.next_owner.as_ref() == Some(&icon.id)
+            || self.ignored_user.as_ref() == Some(&icon.id)
+        {
+            return None;
         }
         // Check the signature and dimensions without excluding indexed or interlaced PNGs.
         let header = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR\0\0\0\x40\0\0\0\x40";
-        Ok((icon.bytes.len() >= 45 && icon.bytes.starts_with(header)).then_some(icon.bytes))
+        (icon.bytes.len() >= 45 && icon.bytes.starts_with(header)).then_some(icon.bytes.as_slice())
+    }
+}
+
+fn known_icons(c: &Connection, game: &Path) -> Result<KnownIcons> {
+    if !table_exists(c)? {
+        return Ok(KnownIcons::default());
+    }
+    Ok(c.query_row(
+        "SELECT owner,next_owner,ignored_user,replace_user,observed_user FROM server_icon WHERE singleton=1 AND game=?",
+        [game.to_str().ok_or_else(unavailable)?],
+        |row| Ok(KnownIcons {
+            owner: row.get(0)?,
+            next_owner: row.get(1)?,
+            ignored_user: row.get(2)?,
+            replace_user: row.get(3)?,
+            observed_user: row.get(4)?,
+        }),
+    ).optional()?.unwrap_or_default())
+}
+
+/// Read an eligible user-supplied icon for presentation.
+pub fn user_icon(db: &crate::StateDatabase, game: &Path) -> Result<Option<Vec<u8>>> {
+    let game = canonical_game(game)?;
+    let (icon, already_observed) = db.read(|c| read_user_icon(c, &game))?;
+    if icon.is_none() || already_observed {
+        return Ok(icon.map(|icon| icon.bytes));
+    }
+    db.write(|c| {
+        // A concurrent upload or clear may have changed precedence since the read.
+        let (icon, already_observed) = read_user_icon(c, &game)?;
+        if let Some(icon) = &icon
+            && !already_observed
+        {
+            ensure_table(c)?;
+            c.execute(
+                "INSERT INTO server_icon(singleton,game,enabled,observed_user) VALUES(1,?,0,?)
+                 ON CONFLICT(singleton) DO UPDATE SET game=excluded.game,observed_user=excluded.observed_user
+                 WHERE game IS NULL OR game=excluded.game",
+                params![game.to_str().ok_or_else(unavailable)?, icon.id],
+            )?;
+        }
+        Ok(icon.map(|icon| icon.bytes))
     })
+}
+
+fn read_user_icon(c: &Connection, game: &Path) -> Result<(Option<Icon>, bool)> {
+    let known = known_icons(c, game)?;
+    let Current::Present(icon) = read_icon_bounded(&game.join(FILE_NAME), MAX_GAME_ICON_BYTES)?
+    else {
+        return Ok((None, false));
+    };
+    let already_observed = known.observed_user.as_ref() == Some(&icon.id);
+    Ok((
+        known.user_png(&icon).is_some().then_some(icon),
+        already_observed,
+    ))
+}
+
+/// Absence after publication or adoption means the user removed the icon.
+pub fn deleted_on_disk(c: &Connection, game: &Path) -> Result<bool> {
+    let game = canonical_game(game)?;
+    let known = known_icons(c, &game)?;
+    if known.replace_user || (known.owner.is_none() && known.observed_user.is_none()) {
+        return Ok(false);
+    }
+    match fs::symlink_metadata(game.join(FILE_NAME)) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(err) => Err(err.into()),
+        Ok(_) => Ok(false),
+    }
 }
 
 struct Projection {
@@ -116,6 +238,7 @@ struct Projection {
     next_owner: Option<String>,
     stage: Option<String>,
     replace_user: bool,
+    observed_user: Option<String>,
 }
 
 /// Caller holds stopped ownership. Failures leave the presentation retryable.
@@ -127,28 +250,22 @@ pub fn reconcile(state: &Path, game: &Path) -> Result<()> {
     let c = connect(&state, false)?;
     // Keep the process owner's stop/start loop responsive during other writers.
     c.busy_timeout(std::time::Duration::from_millis(25))?;
-    let initialized: bool = c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='server_icon')",
-        [],
-        |row| row.get(0),
-    )?;
-    if !initialized {
+    if !table_exists(&c)? {
         return Ok(());
     }
     let Some(row) = c.query_row(
-        "SELECT game,png,owner,next_owner,stage,replace_user FROM server_icon
+        "SELECT game,png,owner,next_owner,stage,replace_user,observed_user FROM server_icon
          WHERE singleton=1 AND enabled=1 AND (png IS NOT NULL OR owner IS NOT NULL OR stage IS NOT NULL)",
         [],
         |row| Ok(Projection {
             game: row.get(0)?, png: row.get(1)?, owner: row.get(2)?,
             next_owner: row.get(3)?, stage: row.get(4)?, replace_user: row.get(5)?,
+            observed_user: row.get(6)?,
         }),
     ).optional()? else {
         return Ok(());
     };
-    reject_linked_directories(game, "state_server_icon_unavailable")?;
-    require_directory(game)?;
-    let game = fs::canonicalize(game)?;
+    let game = canonical_game(game)?;
     if game != Path::new(&row.game) {
         return Ok(());
     }
@@ -170,7 +287,8 @@ pub fn reconcile(state: &Path, game: &Path) -> Result<()> {
         Current::Other => return Ok(()),
         Current::Present(icon)
             if Some(&icon.id) != row.owner.as_ref()
-                && Some(&icon.id) != row.next_owner.as_ref() => {
+                && Some(&icon.id) != row.next_owner.as_ref() =>
+        {
             if !row.replace_user {
                 return Ok(());
             }
@@ -184,8 +302,22 @@ pub fn reconcile(state: &Path, game: &Path) -> Result<()> {
         Current::Other => unreachable!("checked above"),
     };
     if let Some(png) = row.png.as_ref() {
+        if current_id.is_none()
+            && !row.replace_user
+            && (row.owner.is_some() || row.observed_user.is_some())
+        {
+            return Ok(());
+        }
         if manual.is_some() || !matches!(&current, Current::Present(icon) if icon.bytes == *png) {
-            install(&c, &game, &target, current_id, row.owner.as_deref(), manual, png)?;
+            install(
+                &c,
+                &game,
+                &target,
+                current_id,
+                row.owner.as_deref(),
+                manual,
+                png,
+            )?;
             return Ok(());
         }
     } else if current_id.is_some() {
@@ -281,7 +413,10 @@ fn apply<'a>(
         let (owner, applied) = effect()?;
         record(&tx, game, owner, None, None)?;
         if applied {
-            tx.execute("UPDATE server_icon SET replace_user=0 WHERE singleton=1", [])?;
+            tx.execute(
+                "UPDATE server_icon SET replace_user=0 WHERE singleton=1",
+                [],
+            )?;
         }
     }
     tx.commit()?;
@@ -321,7 +456,10 @@ fn backup(game: &Path, bytes: &[u8]) -> Result<()> {
         match rename_absent(&stage, &game.join(BACKUP_NAME)) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                rename_absent(&stage, &game.join(format!("server-icon.vesta-backup-{id}.png")))?;
+                rename_absent(
+                    &stage,
+                    &game.join(format!("server-icon.vesta-backup-{id}.png")),
+                )?;
             }
             Err(e) => return Err(e.into()),
         }
@@ -370,9 +508,7 @@ fn read_icon_bounded(path: &Path, limit: usize) -> Result<Current> {
         return Ok(Current::Other);
     };
     let mut bytes = Vec::new();
-    (&file)
-        .take(limit as u64 + 1)
-        .read_to_end(&mut bytes)?;
+    (&file).take(limit as u64 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > limit {
         return Ok(Current::Other);
     }
@@ -497,6 +633,26 @@ mod tests {
     }
 
     #[test]
+    fn icon_observation_migration_preserves_ownership_and_pending_uploads() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE server_icon (
+                singleton INTEGER PRIMARY KEY, game TEXT, enabled INTEGER NOT NULL, png BLOB,
+                owner TEXT, next_owner TEXT, stage TEXT, replace_user INTEGER NOT NULL
+            ) STRICT;
+            INSERT INTO server_icon VALUES (1,'game',1,x'01','owner','next','stage',1);",
+        )
+        .unwrap();
+        migrate_user_observation(&c).unwrap();
+        let known = known_icons(&c, Path::new("game")).unwrap();
+        assert_eq!(known.owner.as_deref(), Some("owner"));
+        assert_eq!(known.next_owner.as_deref(), Some("next"));
+        assert!(known.replace_user);
+        assert!(known.ignored_user.is_none());
+        assert!(known.observed_user.is_none());
+    }
+
+    #[test]
     fn only_the_owned_icon_is_updated_or_removed() {
         let f = Fixture::new();
         let target = f.target();
@@ -534,7 +690,8 @@ mod tests {
         let f = Fixture::new();
         fs::write(f.target(), b"manual first").unwrap();
         let upload = |bytes: &[u8]| {
-            f.db.write(|c| store_branding(c, &f.game, Some(bytes), true)).unwrap();
+            f.db.write(|c| store_branding(c, &f.game, Some(bytes), true))
+                .unwrap();
         };
         upload(b"branding first");
         f.reconcile();
@@ -549,7 +706,10 @@ mod tests {
         assert_eq!(fs::read(f.target()).unwrap(), b"branding second");
         assert_eq!(fs::read(f.game.join(BACKUP_NAME)).unwrap(), b"manual first");
         assert!(fs::read_dir(&f.game).unwrap().flatten().any(|entry| {
-            entry.file_name().to_string_lossy().starts_with("server-icon.vesta-backup-")
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("server-icon.vesta-backup-")
                 && fs::read(entry.path()).unwrap() == b"manual second"
         }));
     }

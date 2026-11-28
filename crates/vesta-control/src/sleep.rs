@@ -339,17 +339,29 @@ impl Sleep {
             })
             .map_err(|_| "sleep_state_unavailable")
     }
-    pub fn startup_report(&self) -> Result<Option<crate::machine::startup::StartupReport>, &'static str> {
-        self.db.read(|c| load(c, &self.db, STARTUP_REPORT_KEY))
-            .map(|row| row.map(|(_, report)| report)).map_err(map_state_error)
+    pub fn startup_report(
+        &self,
+    ) -> Result<Option<crate::machine::startup::StartupReport>, &'static str> {
+        self.db
+            .read(|c| load(c, &self.db, STARTUP_REPORT_KEY))
+            .map(|row| row.map(|(_, report)| report))
+            .map_err(map_state_error)
     }
 
-    pub(crate) fn record_startup(&self, report: &crate::machine::startup::StartupReport) -> Result<(), &'static str> {
-        self.db.write(|c| put(c, &self.db, STARTUP_REPORT_KEY, report)).map_err(map_state_error)
+    pub(crate) fn record_startup(
+        &self,
+        report: &crate::machine::startup::StartupReport,
+    ) -> Result<(), &'static str> {
+        self.db
+            .write(|c| put(c, &self.db, STARTUP_REPORT_KEY, report))
+            .map_err(map_state_error)
     }
 
     #[cfg(test)]
-    pub(crate) fn initialize(&self, policy: crate::config::OnAgentStart) -> Result<(), &'static str> {
+    pub(crate) fn initialize(
+        &self,
+        policy: crate::config::OnAgentStart,
+    ) -> Result<(), &'static str> {
         self.initialize_startup(policy, false)
     }
 
@@ -533,18 +545,35 @@ impl Sleep {
     }
     fn document(&self) -> Result<motd::Document, &'static str> {
         use base64::{Engine, engine::general_purpose::STANDARD};
-        let (mut document, branding) = self.db
+        let game = self
+            .icon_files
+            .as_ref()
+            .and_then(|files| files.server_icon_root().ok().flatten());
+        let (mut document, branding, deleted) = self
+            .db
             .read(|c| {
                 let document = load::<motd::Document>(c, &self.db, "motd-policy")?
-                    .map(|(_, document)| document).unwrap_or_default();
-                let branding = crate::identity::management::permissions::branding::game_projection(c, self.db.server_id())?;
-                Ok((document, branding))
+                    .map(|(_, document)| document)
+                    .unwrap_or_default();
+                let branding = crate::identity::management::permissions::branding::game_projection(
+                    c,
+                    self.db.server_id(),
+                )?;
+                let deleted = match &game {
+                    Some(game) => vesta_state::server_icon::deleted_on_disk(c, game)?,
+                    None => false,
+                };
+                Ok((document, branding, deleted))
             })
             .map_err(|_| "motd_state_unavailable")?;
-        if let Some(branding) = branding {
+        if deleted {
+            document.normal_icon_png = None;
+        } else if let Some(branding) = branding {
             document.normal_icon_png = branding.map(|png| STANDARD.encode(png));
         }
-        if let Some(manual) = self.icon_files.as_ref()
+        if let Some(manual) = self
+            .icon_files
+            .as_ref()
             .and_then(|files| files.game_icon().ok().flatten())
             .and_then(|bytes| motd::normalize_icon(&bytes))
         {

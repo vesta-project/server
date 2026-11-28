@@ -10,7 +10,9 @@ The temporary Minecraft-port responder serves Sleeping and Waking when offline s
 
 PUT `/v1/servers/{serverId}/manage/server/icon` uploads PNG branding. The same write stages a 64 by 64 PNG for Minecraft. Vesta Server or the Supervisor applies it to the game-root `server-icon.png` while stopped and before launch, including an automatic crash restart. Minecraft reads the file on startup.
 
-An explicit branding upload preserves an existing user-supplied icon as `server-icon.vesta-backup.png` before replacing it. If that name is taken, Vesta adds a unique suffix. A subsequently added user icon takes precedence until the next upload. Clearing the branding icon removes only a file still owned by the projection. Backups are retained.
+An explicit branding upload preserves an existing user-supplied icon as `server-icon.vesta-backup.png` before replacing it. If that name is taken, Vesta adds a unique suffix. The uploaded icon is visible while the file write is pending. A subsequently added or changed file takes precedence. Deleting a published or previously displayed file clears the displayed icon unless an upload is pending.
+
+DELETE `/manage/server/icon` accepts the branding icon's ETag, or the game icon's ETag when the branding endpoint returns 404. A clear leaves manual files and backups intact and ignores the manual file present at clear time until it changes. Vesta removes its own projected file at the next stopped window.
 
 Read `/manage/server/game-icon` first and use `/manage/server/icon` when it has no user-supplied file. Both reads require `status.view`. The game-icon route returns a 64 by 64 PNG up to 256 KiB with an SHA-256 ETag and supports `If-None-Match`. Host inventory exposes `gameIconEtag` and `iconEtag`. `icon_source` and `iconSource` are retained for compatibility with older launchers.
 

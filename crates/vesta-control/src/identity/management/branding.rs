@@ -99,7 +99,16 @@ pub(super) fn patch(repo: &Repository<'_>, input: &ServerPatch) -> AdminResult<V
     save(repo, BRANDING, &value.to_string())?;
     projection(repo)
 }
-pub(super) fn icon(repo: &Repository<'_>) -> AdminResult<Option<Vec<u8>>> {
+pub(super) fn icon(
+    repo: &Repository<'_>,
+    game: Option<&std::path::Path>,
+) -> AdminResult<Option<Vec<u8>>> {
+    if let Some(game) = game
+        && vesta_state::server_icon::deleted_on_disk(repo.connection(), game)
+            .map_err(|_| PermissionError::Unavailable)?
+    {
+        return Ok(None);
+    }
     setting(repo, ICON)?
         .filter(|(value, _)| !value.is_empty())
         .map(|(value, _)| {
@@ -111,9 +120,17 @@ pub(super) fn icon(repo: &Repository<'_>) -> AdminResult<Option<Vec<u8>>> {
 }
 /// Host-side observation for server cards: the stored icon's ETag, read
 /// directly from the server's own database without any caller authority.
-pub fn stored_icon_etag(db: &vesta_state::StateDatabase) -> Option<String> {
+pub fn stored_icon_etag(
+    db: &vesta_state::StateDatabase,
+    game: Option<&std::path::Path>,
+) -> Option<String> {
     let encoded: String = db
         .read(|c| {
+            if let Some(game) = game
+                && vesta_state::server_icon::deleted_on_disk(c, game)?
+            {
+                return Ok(None);
+            }
             Ok(c.query_row(
                 "SELECT s.desired_value FROM settings s JOIN server_identity i ON i.server_id=s.server_id WHERE i.singleton=1 AND s.key=?1",
                 [ICON],
@@ -122,7 +139,10 @@ pub fn stored_icon_etag(db: &vesta_state::StateDatabase) -> Option<String> {
             .optional()?)
         })
         .ok()??;
-    (!encoded.is_empty()).then(|| URL_SAFE_NO_PAD.decode(encoded).ok()).flatten().map(|b| icon_etag(&b))
+    (!encoded.is_empty())
+        .then(|| URL_SAFE_NO_PAD.decode(encoded).ok())
+        .flatten()
+        .map(|b| icon_etag(&b))
 }
 pub(crate) fn stored_icon_source(db: &vesta_state::StateDatabase) -> IconSource {
     db.read(|c| {
@@ -158,20 +178,31 @@ pub(crate) fn prepare_game_projection(
     server: &str,
     game: &std::path::Path,
 ) -> vesta_state::Result<bool> {
-    let Some(png) = game_projection(c, server)? else { return Ok(false) };
+    let Some(png) = game_projection(c, server)? else {
+        return Ok(false);
+    };
     vesta_state::server_icon::store_branding(c, game, png.as_deref(), false)?;
     Ok(true)
 }
 
 /// Outer None means the server still uses the legacy presentation icon.
-pub(crate) fn game_projection(c: &rusqlite::Connection, server: &str) -> vesta_state::Result<Option<Option<Vec<u8>>>> {
-    let setting: Option<String> = c.query_row(
-        "SELECT desired_value FROM settings WHERE server_id=? AND key=?",
-        params![server, ICON],
-        |row| row.get(0),
-    ).optional()?;
-    Ok(setting.map(|encoded| URL_SAFE_NO_PAD.decode(encoded).ok()
-        .and_then(|bytes| crate::motd::branding_game_icon(&bytes))))
+pub(crate) fn game_projection(
+    c: &rusqlite::Connection,
+    server: &str,
+) -> vesta_state::Result<Option<Option<Vec<u8>>>> {
+    let setting: Option<String> = c
+        .query_row(
+            "SELECT desired_value FROM settings WHERE server_id=? AND key=?",
+            params![server, ICON],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(setting.map(|encoded| {
+        URL_SAFE_NO_PAD
+            .decode(encoded)
+            .ok()
+            .and_then(|bytes| crate::motd::branding_game_icon(&bytes))
+    }))
 }
 
 pub(super) fn put_icon(
@@ -182,21 +213,35 @@ pub(super) fn put_icon(
 ) -> AdminResult<Value> {
     let normalized =
         crate::motd::normalize_branding_icon(bytes).ok_or(PermissionError::InvalidRequest)?;
-    condition(icon(repo)?.as_deref(), expected)?;
+    condition(icon(repo, game)?.as_deref(), expected)?;
     if let Some(game) = game {
-        let game_icon = crate::motd::branding_game_icon(&normalized).ok_or(PermissionError::InvalidRequest)?;
+        let game_icon =
+            crate::motd::branding_game_icon(&normalized).ok_or(PermissionError::InvalidRequest)?;
         vesta_state::server_icon::store_branding(repo.connection(), game, Some(&game_icon), true)
             .map_err(|_| PermissionError::Unavailable)?;
     }
     save(repo, ICON, &URL_SAFE_NO_PAD.encode(&normalized))?;
     Ok(json!({"etag":icon_etag(&normalized)}))
 }
-pub(super) fn delete_icon(repo: &Repository<'_>, game: Option<&std::path::Path>, expected: &str) -> AdminResult<Value> {
-    let current = icon(repo)?.ok_or(PermissionError::NotFound)?;
-    condition(Some(&current), Some(expected))?;
+pub(super) fn delete_icon(
+    repo: &Repository<'_>,
+    game: Option<&std::path::Path>,
+    expected: &str,
+) -> AdminResult<Value> {
+    let current = icon(repo, game)?;
+    if let Some(current) = &current {
+        condition(Some(current), Some(expected))?;
+    }
     if let Some(game) = game {
-        vesta_state::server_icon::store_branding(repo.connection(), game, None, false)
-            .map_err(|_| PermissionError::Unavailable)?;
+        let cleared = vesta_state::server_icon::clear_branding(repo.connection(), game, |manual| {
+            current.is_some() || condition(manual, Some(expected)).is_ok()
+        })
+        .map_err(|_| PermissionError::Unavailable)?;
+        if !cleared {
+            return Err(PermissionError::PreconditionFailed);
+        }
+    } else if current.is_none() {
+        return Err(PermissionError::NotFound);
     }
     // Keep a tombstone so an old MOTD icon cannot reappear on restart.
     save(repo, ICON, "")?;

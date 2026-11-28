@@ -34,8 +34,14 @@ pub enum ServerRole {
     /// Host-owner expansion, confined to this worker's server services.
     Owner,
     Admin,
-    EditedBuiltin { role: String, rank: i32 },
-    Custom { id: Uuid, rank: i32 },
+    EditedBuiltin {
+        role: String,
+        rank: i32,
+    },
+    Custom {
+        id: Uuid,
+        rank: i32,
+    },
     Maintainer,
     Moderator,
     Viewer,
@@ -49,7 +55,10 @@ impl ServerRole {
         match role {
             EffectiveRole::PrimaryOwner | EffectiveRole::Owner => Self::Owner,
             EffectiveRole::Custom { id, rank } => Self::Custom { id, rank },
-            EffectiveRole::EditedBuiltin { role, rank } => Self::EditedBuiltin { role: role.id().into(), rank },
+            EffectiveRole::EditedBuiltin { role, rank } => Self::EditedBuiltin {
+                role: role.id().into(),
+                rank,
+            },
             EffectiveRole::Server(role) => match role {
                 HostRole::Admin => Self::Admin,
                 HostRole::Maintainer => Self::Maintainer,
@@ -78,15 +87,23 @@ impl ServerRole {
             || crate::identity::BuiltinRole::Owner.capabilities(),
             crate::machine::owners::ServerRole::capabilities,
         );
-        caps.iter().copied().filter(|&capability| !matches!(self, Self::Custom { .. } | Self::EditedBuiltin { .. }) && self.permits_projection(capability)
-            && (capability != Capability::AccessSourcesManage || matches!(self, Self::Owner)))
+        caps.iter().copied().filter(|&capability| {
+            !matches!(self, Self::Custom { .. } | Self::EditedBuiltin { .. })
+                && self.permits_projection(capability)
+                && (capability != Capability::AccessSourcesManage || matches!(self, Self::Owner))
+        })
     }
 
     pub fn permits_projection(&self, capability: Capability) -> bool {
-            !capability.local_only()
-                && !matches!(capability, Capability::DevicesRevoke | Capability::CredentialsManage | Capability::SecurityManage)
-                && (capability == Capability::AccessSourcesManage || !capability.host_scoped())
-                && capability != Capability::LifecycleEnable
+        !capability.local_only()
+            && !matches!(
+                capability,
+                Capability::DevicesRevoke
+                    | Capability::CredentialsManage
+                    | Capability::SecurityManage
+            )
+            && (capability == Capability::AccessSourcesManage || !capability.host_scoped())
+            && capability != Capability::LifecycleEnable
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,7 +121,8 @@ pub struct WorkerActivityIdentity {
     pub device_name: String,
 }
 
-pub type WhitelistRoles = std::collections::BTreeMap<String, std::collections::BTreeMap<Uuid, String>>;
+pub type WhitelistRoles =
+    std::collections::BTreeMap<String, std::collections::BTreeMap<Uuid, String>>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -186,7 +204,14 @@ impl Worker {
         host_id: Uuid,
         server_id: Uuid,
     ) -> Result<Self, HostError> {
-        Self::open_with_startup(config, clock, supervisor, host_id, server_id, Default::default())
+        Self::open_with_startup(
+            config,
+            clock,
+            supervisor,
+            host_id,
+            server_id,
+            Default::default(),
+        )
     }
 
     pub fn open_with_startup(
@@ -208,7 +233,15 @@ impl Worker {
         policy: WorkerPolicy,
         startup: crate::machine::startup::StartupMode,
     ) -> Result<Self, HostError> {
-        Self::open_bound(config, clock, supervisor, policy.host_id, policy.server_id, startup, Some(policy))
+        Self::open_bound(
+            config,
+            clock,
+            supervisor,
+            policy.host_id,
+            policy.server_id,
+            startup,
+            Some(policy),
+        )
     }
 
     fn open_bound(
@@ -224,7 +257,13 @@ impl Worker {
             return Err(HostError::Supervisor("worker_binding_invalid"));
         }
         let generation = policy.as_ref().map_or(0, |policy| policy.generation);
-        let host = Host::open_bound(config, clock, supervisor, Some((host_id, server_id, policy)), startup)?;
+        let host = Host::open_bound(
+            config,
+            clock,
+            supervisor,
+            Some((host_id, server_id, policy)),
+            startup,
+        )?;
         let handle = WorkerHandle {
             network: host.network_handle(),
             host_id,
@@ -244,7 +283,13 @@ impl Worker {
     ) -> Result<Option<Self>, HostError> {
         match entry {
             None => Ok(None),
-            Some(entry) if matches!(entry.state, crate::machine::registry::ServerState::Deleted | crate::machine::registry::ServerState::Disabled) => {
+            Some(entry)
+                if matches!(
+                    entry.state,
+                    crate::machine::registry::ServerState::Deleted
+                        | crate::machine::registry::ServerState::Disabled
+                ) =>
+            {
                 Ok(None)
             }
             Some(entry) => {
@@ -256,7 +301,10 @@ impl Worker {
         self.handle.clone()
     }
     pub(crate) fn recover_removal_fence(&self, generation: u64) -> vesta_state::Result<()> {
-        crate::identity::worker_policy::recover_removal_fence(self.handle.network.database(), generation)
+        crate::identity::worker_policy::recover_removal_fence(
+            self.handle.network.database(),
+            generation,
+        )
     }
     /// Fence automation execution while the Host checks jobs and commits disablement.
     pub fn disable_guard(&self) -> Result<std::sync::MutexGuard<'_, ()>, &'static str> {
@@ -317,24 +365,34 @@ impl ServerWorker for WorkerHandle {
         self.network.sleep().startup_report().ok().flatten()
     }
     fn configured_startup(&self) -> crate::machine::startup::StartupAction {
-        self.network.sleep().on_agent_start_explicit(self.network.configuration().on_agent_start_explicit())
-            .ok().flatten().into()
+        self.network
+            .sleep()
+            .on_agent_start_explicit(self.network.configuration().on_agent_start_explicit())
+            .ok()
+            .flatten()
+            .into()
     }
     fn icon_etag(&self) -> Option<String> {
+        let game = self.network.files().server_icon_root().ok().flatten();
         crate::identity::management::permissions::branding::stored_icon_etag(
             self.network.database(),
+            game.as_deref(),
         )
     }
     fn public_resource_packs(&self) -> Option<crate::resource_packs::hosting::Handle> {
         Some(self.network.resource_packs().clone())
     }
     fn game_icon_etag(&self) -> Option<String> {
-        self.network.files().game_icon().ok()?.map(|bytes| {
-            crate::identity::management::permissions::branding::icon_etag(&bytes)
-        })
+        self.network
+            .files()
+            .game_icon()
+            .ok()?
+            .map(|bytes| crate::identity::management::permissions::branding::icon_etag(&bytes))
     }
     fn icon_source(&self) -> crate::identity::management::permissions::branding::IconSource {
-        crate::identity::management::permissions::branding::stored_icon_source(self.network.database())
+        crate::identity::management::permissions::branding::stored_icon_source(
+            self.network.database(),
+        )
     }
     fn server_id(&self) -> Uuid {
         self.server_id
@@ -368,7 +426,11 @@ impl ServerWorker for WorkerHandle {
             host_id: self.host_id,
             server_id: self.server_id,
             active_generation: self.active_generation.clone(),
-            bans_path: self.network.configuration().game().join(crate::host::BANS_FILE),
+            bans_path: self
+                .network
+                .configuration()
+                .game()
+                .join(crate::host::BANS_FILE),
             subject,
         };
         trusted.authenticate()?;
@@ -391,8 +453,9 @@ impl TrustedAuthorization {
         self.subject.expires_at_ms
     }
     pub(crate) fn check_pack_ban(&self) -> Result<(), ManagementError> {
-        let player = crate::identity::minecraft::MinecraftUuid::parse(&self.subject.account_id.to_string())
-            .map_err(|_| ManagementError::SessionInvalid)?;
+        let player =
+            crate::identity::minecraft::MinecraftUuid::parse(&self.subject.account_id.to_string())
+                .map_err(|_| ManagementError::SessionInvalid)?;
         let bans = crate::minecraft_admission::BanList::load(&self.bans_path)
             .map_err(|_| ManagementError::Unavailable)?;
         if bans.contains(player) {

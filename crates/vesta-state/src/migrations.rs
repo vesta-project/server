@@ -43,10 +43,12 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
             Ok(())
         }
         34 => {
-            c.execute_batch("CREATE TABLE server_automation_disabled (
+            c.execute_batch(
+                "CREATE TABLE server_automation_disabled (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                 since_ms INTEGER NOT NULL CHECK(since_ms>=0)
-            ) STRICT;")?;
+            ) STRICT;",
+            )?;
             Ok(())
         }
         35 => {
@@ -71,6 +73,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
             Ok(())
         }
         36 => crate::server_icon::migrate(c),
+        37 => crate::server_icon::migrate_user_observation(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }

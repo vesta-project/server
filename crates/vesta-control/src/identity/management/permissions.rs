@@ -442,7 +442,10 @@ fn session_current(now: i64, expires: i64, monotonic: std::time::Instant) -> Adm
 fn access_document(settings: &access::AccessSettings) -> Value {
     let mut value = json!({"settings":settings});
     // Keep the deprecated owner toggle readable for older launchers.
-    value["settings"]["sync_whitelist"] = json!((settings.auto_whitelist_roles.contains("*") || settings.auto_whitelist_roles.contains("owner")));
+    value["settings"]["sync_whitelist"] = json!(
+        (settings.auto_whitelist_roles.contains("*")
+            || settings.auto_whitelist_roles.contains("owner"))
+    );
     value
 }
 
@@ -483,7 +486,16 @@ impl ManagementAccess {
     }
 
     fn permission_session(&self, token: &str) -> AdminResult<(Subject, i64, std::time::Instant)> {
-        if let Some(t)=&self.trusted {let subject=t.authenticate()?;let ms=t.expires_at_ms();return Ok((subject,ms,std::time::Instant::now()+std::time::Duration::from_millis(ms.saturating_sub(self.now()).max(0) as u64)))}
+        if let Some(t) = &self.trusted {
+            let subject = t.authenticate()?;
+            let ms = t.expires_at_ms();
+            return Ok((
+                subject,
+                ms,
+                std::time::Instant::now()
+                    + std::time::Duration::from_millis(ms.saturating_sub(self.now()).max(0) as u64),
+            ));
+        }
         let subject = self.authenticate(token)?;
         let stores = self
             .stores
@@ -553,7 +565,7 @@ impl ManagementAccess {
         self.admin_write(|repo| {
             session_current(repo.now, expires, monotonic)?;
             require(&repo.policy(Some(&subject))?, Capability::StatusView)?;
-            branding::icon(repo)
+            branding::icon(repo, self.icon_game.as_deref())
         })
     }
     fn admin_write<T>(
@@ -640,7 +652,9 @@ impl ManagementAccess {
             PermissionMutation::PutIcon(expected, bytes) => {
                 branding::put_icon(repo, self.icon_game.as_deref(), expected.as_deref(), bytes)
             }
-            PermissionMutation::DeleteIcon(expected) => branding::delete_icon(repo, self.icon_game.as_deref(), expected),
+            PermissionMutation::DeleteIcon(expected) => {
+                branding::delete_icon(repo, self.icon_game.as_deref(), expected)
+            }
             PermissionMutation::UserRoles(id, input) => {
                 if input.add.len() + input.remove.len() > 64
                     || input.add.is_empty() && input.remove.is_empty()
@@ -802,7 +816,8 @@ impl ManagementAccess {
                     &settings.whitelist,
                     &settings.password,
                 ]
-                .contains(&id) || settings.auto_whitelist_roles.contains(id)
+                .contains(&id)
+                    || settings.auto_whitelist_roles.contains(id)
                 {
                     return Err(PermissionError::Conflict);
                 }
@@ -825,11 +840,12 @@ impl ManagementAccess {
                     [],
                     |row| row.get(0),
                 )?;
-                if worker && (input.anonymous.is_some()
-                    || input.new_user.is_some()
-                    || input.whitelist.is_some()
-                    || input.whitelist_enabled.is_some()
-                    || input.password.is_some())
+                if worker
+                    && (input.anonymous.is_some()
+                        || input.new_user.is_some()
+                        || input.whitelist.is_some()
+                        || input.whitelist_enabled.is_some()
+                        || input.password.is_some())
                 {
                     return Err(PermissionError::Forbidden);
                 }
@@ -860,7 +876,10 @@ impl ManagementAccess {
                         }
                         if roles.contains("*") {
                             settings.auto_whitelist_roles = ["*".into()].into();
-                        } else if let Some(available) = crate::identity::worker_policy::whitelist_roles(repo.connection()).map_err(|_| PermissionError::Unavailable)? {
+                        } else if let Some(available) =
+                            crate::identity::worker_policy::whitelist_roles(repo.connection())
+                                .map_err(|_| PermissionError::Unavailable)?
+                        {
                             if roles.iter().any(|role| !available.contains_key(role)) {
                                 return Err(PermissionError::InvalidRequest);
                             }

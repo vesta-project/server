@@ -52,15 +52,9 @@ fn dispatch_authorized(
     }
     // Identity and SFTP belong to the host. Never expose the legacy authority
     // management endpoints or allow local per-server enrollment through a worker.
-    if [
-        "roles",
-        "users",
-        "devices",
-        "invitations",
-        "sftp",
-    ]
-    .iter()
-    .any(|p| suffix == *p || suffix.starts_with(&format!("{p}/")))
+    if ["roles", "users", "devices", "invitations", "sftp"]
+        .iter()
+        .any(|p| suffix == *p || suffix.starts_with(&format!("{p}/")))
     {
         return crate::manage::error(StatusCode::FORBIDDEN, "management_forbidden");
     }
@@ -80,7 +74,9 @@ fn dispatch_authorized(
         }) {
             Ok(Ok(value)) => crate::manage::ok(value),
             Ok(Err(e)) => crate::manage::management_error(e),
-            Err(_) => crate::manage::error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+            Err(_) => {
+                crate::manage::error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
+            }
         };
     }
     let path = format!("/api/v3/manage/{suffix}");
@@ -91,19 +87,19 @@ fn dispatch_authorized(
         return crate::manage::error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large");
     }
     let request = crate::manage::Request {
-            tls_fingerprint: None,
-            method: request.method,
-            path: &path,
-            query: request.query,
-            // A private non-credential marker; the request-scoped facade authenticates
-            // the supplied trusted subject and rechecks durable worker generation.
-            authorization: Some("trusted-worker"),
-            idempotency: request.idempotency_key,
-            bytes: request.body,
-            if_match: request.if_match,
-            if_none_match: request.if_none_match,
-            range: request.range,
-            if_range: request.if_range,
+        tls_fingerprint: None,
+        method: request.method,
+        path: &path,
+        query: request.query,
+        // A private non-credential marker; the request-scoped facade authenticates
+        // the supplied trusted subject and rechecks durable worker generation.
+        authorization: Some("trusted-worker"),
+        idempotency: request.idempotency_key,
+        bytes: request.body,
+        if_match: request.if_match,
+        if_none_match: request.if_none_match,
+        range: request.range,
+        if_range: request.if_range,
     };
     if suffix == "motd/preview" {
         crate::manage::presentation::dispatch_with_name(host, request, server_name)
@@ -207,6 +203,30 @@ mod tests {
                 },
             )
         }
+
+        fn change_icon(
+            &self,
+            method: &Method,
+            key: &str,
+            png: &[u8],
+            tag: Option<&str>,
+        ) -> crate::Reply {
+            dispatch_inner(
+                &self.handle,
+                self.subject.clone(),
+                WorkerRequest {
+                    method,
+                    path: "server/icon",
+                    query: None,
+                    body: png,
+                    idempotency_key: Some(key),
+                    if_match: tag,
+                    if_none_match: tag.is_none().then_some("*"),
+                    range: None,
+                    if_range: None,
+                },
+            )
+        }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -236,21 +256,38 @@ mod tests {
         let page = |query: Option<&str>| {
             let reply = f.request(f.subject.clone(), "console", query);
             assert_eq!(reply.status(), http::StatusCode::OK);
-            let crate::ReplyBody::Bytes(bytes) = reply.body() else { panic!("JSON reply"); };
+            let crate::ReplyBody::Bytes(bytes) = reply.body() else {
+                panic!("JSON reply");
+            };
             serde_json::from_slice::<serde_json::Value>(bytes).unwrap()["data"].clone()
         };
         let initial = page(None);
         let first = initial["previous_cursor"].as_str().unwrap();
-        std::fs::OpenOptions::new().append(true).open(latest).unwrap().write_all(b"four\n").unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(latest)
+            .unwrap()
+            .write_all(b"four\n")
+            .unwrap();
         let recent = page(Some(&format!("before={first}&limit=2")));
         assert_eq!(recent["items"][0]["text"], "two");
         assert_eq!(recent["items"][1]["text"], "three");
-        let older = page(Some(&format!("before={}", recent["previous_cursor"].as_str().unwrap())));
+        let older = page(Some(&format!(
+            "before={}",
+            recent["previous_cursor"].as_str().unwrap()
+        )));
         assert_eq!(older["items"][0]["text"], "one");
-        let archive = page(Some(&format!("before={}", older["previous_cursor"].as_str().unwrap())));
+        let archive = page(Some(&format!(
+            "before={}",
+            older["previous_cursor"].as_str().unwrap()
+        )));
         assert_eq!(archive["items"][0]["text"], "archive");
         assert!(archive["previous_cursor"].is_null());
-        let invalid = f.request(f.subject.clone(), "console", Some(&format!("before={first}&cursor={first}")));
+        let invalid = f.request(
+            f.subject.clone(),
+            "console",
+            Some(&format!("before={first}&cursor={first}")),
+        );
         assert_eq!(invalid.status(), http::StatusCode::BAD_REQUEST);
     }
 
@@ -316,42 +353,67 @@ mod tests {
         };
         let f = Fixture::new();
         let mut policy = f.policy.clone();
-        policy.activity_identities.insert(f.subject.device_id, WorkerActivityIdentity {
-            display_name: "VerifiedAlex".into(),
-            device_name: "Alex's launcher".into(),
-        });
+        policy.activity_identities.insert(
+            f.subject.device_id,
+            WorkerActivityIdentity {
+                display_name: "VerifiedAlex".into(),
+                device_name: "Alex's launcher".into(),
+            },
+        );
         f.handle.sync_policy(policy).unwrap();
         let host = f.handle.authorize(f.subject.clone()).unwrap();
         let actor = host.management().authenticate("trusted-worker").unwrap();
         let ops = Operations::new(host.database().clone()).unwrap();
-        let Admission::Created(operation) = ops.submit_game(
-            &actor,
-            GameCommand::Moderate {
-                expected_generation: GenerationId::parse_hex("11111111111111111111111111111111").unwrap(),
-                action: ModerationAction::WhitelistAdd { player: "Steve".into() },
-            },
-            Some("launcher-whitelist-activity"),
-        ).unwrap() else { panic!("expected a new operation"); };
+        let Admission::Created(operation) = ops
+            .submit_game(
+                &actor,
+                GameCommand::Moderate {
+                    expected_generation: GenerationId::parse_hex(
+                        "11111111111111111111111111111111",
+                    )
+                    .unwrap(),
+                    action: ModerationAction::WhitelistAdd {
+                        player: "Steve".into(),
+                    },
+                },
+                Some("launcher-whitelist-activity"),
+            )
+            .unwrap()
+        else {
+            panic!("expected a new operation");
+        };
         let (_, activity) = ops.activity_get(&actor, &operation.id).unwrap().unwrap();
         let activity = serde_json::to_value(activity).unwrap();
-        assert_eq!(activity["actor"], serde_json::json!({
-            "principal_id": f.subject.account_id.to_string(),
-            "display_name": "VerifiedAlex",
-            "device_name": "Alex's launcher",
-        }));
+        assert_eq!(
+            activity["actor"],
+            serde_json::json!({
+                "principal_id": f.subject.account_id.to_string(),
+                "display_name": "VerifiedAlex",
+                "device_name": "Alex's launcher",
+            })
+        );
     }
 
     #[test]
     fn game_icon_read_distinguishes_projected_icons_and_honors_etags() {
         let f = Fixture::new();
-        assert_eq!(f.request(f.subject.clone(), "server/game-icon", None).status(), 404);
+        assert_eq!(
+            f.request(f.subject.clone(), "server/game-icon", None)
+                .status(),
+            404
+        );
         let host = f.handle.authorize(f.subject.clone()).unwrap();
         let game = std::fs::canonicalize(f._temp.path().join("game")).unwrap();
         let png = vesta_control::motd::fallback_icon();
         let db = host.database();
-        db.write(|c| vesta_state::server_icon::store(c, Some(&game), Some(&png))).unwrap();
+        db.write(|c| vesta_state::server_icon::store(c, Some(&game), Some(&png)))
+            .unwrap();
         vesta_state::server_icon::reconcile(db.directory().path(), &game).unwrap();
-        assert_eq!(f.request(f.subject.clone(), "server/game-icon", None).status(), 404);
+        assert_eq!(
+            f.request(f.subject.clone(), "server/game-icon", None)
+                .status(),
+            404
+        );
         let path = game.join("server-icon.png");
         let manual = game.join("manual.png");
         std::fs::write(&manual, &png).unwrap();
@@ -360,18 +422,137 @@ mod tests {
         assert_eq!(response.status(), 200);
         let tag = response.headers()["etag"].to_str().unwrap();
         assert_eq!(f.handle.game_icon_etag().as_deref(), Some(tag));
-        let response = dispatch_inner(&f.handle, f.subject.clone(), WorkerRequest {
-            method: &Method::GET,
-            path: "server/game-icon",
-            query: None,
-            body: b"",
-            idempotency_key: None,
-            if_match: None, if_none_match: Some(tag), range: None, if_range: None,
-        });
+        let response = dispatch_inner(
+            &f.handle,
+            f.subject.clone(),
+            WorkerRequest {
+                method: &Method::GET,
+                path: "server/game-icon",
+                query: None,
+                body: b"",
+                idempotency_key: None,
+                if_match: None,
+                if_none_match: Some(tag),
+                range: None,
+                if_range: None,
+            },
+        );
         assert_eq!(response.status(), 304);
-        db.write(|c| vesta_state::server_icon::store(c, Some(&game), None)).unwrap();
+        db.write(|c| vesta_state::server_icon::store(c, Some(&game), None))
+            .unwrap();
         vesta_state::server_icon::reconcile(db.directory().path(), &game).unwrap();
         assert_eq!(std::fs::read(path).unwrap(), png);
+    }
+
+    fn manual_icon() -> Vec<u8> {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        // A 64x64 red PNG, distinct from the uploaded Vesta icon.
+        STANDARD
+            .decode(concat!(
+                "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAnklEQVR4nO3RsQ3AQBDDMO+/9GUM",
+                "PhAV7A1rt92fTQ/QOkAX0DpAF9A6QBfQOkAX0DpAF9A6QBfQOkAX0DpAF9A6QBfQOkAX0DpAF9A6",
+                "QBfQOkAX0DpAF9A6QBfQOkAX0DpAF9A6QBfQOkAX0DpAF9A6QBfQOkAX0DpAF9A6QBfQOkAX0DpA",
+                "F9A6QBfQOkAX0DpAF9A6QBfQOuAeqCB9Q4jh0vohsdwAAAAASUVORK5CYII=",
+            ))
+            .unwrap()
+    }
+
+    #[test]
+    fn uploaded_icon_stays_visible_until_projection_and_disk_changes_take_precedence() {
+        use vesta_state::server_icon::{BACKUP_NAME, FILE_NAME, reconcile};
+        let f = Fixture::new();
+        let host = f.handle.authorize(f.subject.clone()).unwrap();
+        let game = std::fs::canonicalize(f._temp.path().join("game")).unwrap();
+        let path = game.join(FILE_NAME);
+        let manual = manual_icon();
+        let uploaded = vesta_control::motd::fallback_icon();
+        let get = |leaf| f.request(f.subject.clone(), leaf, None);
+        let stop = || reconcile(host.database().directory().path(), &game).unwrap();
+
+        std::fs::write(&path, &manual).unwrap();
+        assert_eq!(get("server/game-icon").status(), 200);
+        assert!(
+            f.change_icon(&Method::PUT, "upload-branding-icon", &uploaded, None)
+                .status()
+                .is_success()
+        );
+        // The process still owns the game: the old file is intact while the upload is staged.
+        assert_eq!(std::fs::read(&path).unwrap(), manual);
+        assert_eq!(get("server/game-icon").status(), 404);
+        assert!(
+            matches!(get("server/icon").body(), crate::ReplyBody::Bytes(bytes) if bytes == &uploaded)
+        );
+        stop();
+        assert_eq!(std::fs::read(&path).unwrap(), uploaded);
+        assert_eq!(std::fs::read(game.join(BACKUP_NAME)).unwrap(), manual);
+        assert_eq!(get("server/game-icon").status(), 404);
+
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(get("server/icon").status(), 404);
+        assert_eq!(f.handle.icon_etag(), None);
+        stop();
+        assert!(!path.exists());
+
+        std::fs::write(&path, &manual).unwrap();
+        assert!(
+            matches!(get("server/game-icon").body(), crate::ReplyBody::Bytes(bytes) if bytes == &manual)
+        );
+        stop();
+        assert_eq!(std::fs::read(&path).unwrap(), manual);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(get("server/game-icon").status(), 404);
+        assert_eq!(get("server/icon").status(), 404);
+
+        assert!(
+            f.change_icon(&Method::PUT, "upload-after-removal", &uploaded, None)
+                .status()
+                .is_success()
+        );
+        assert!(
+            matches!(get("server/icon").body(), crate::ReplyBody::Bytes(bytes) if bytes == &uploaded)
+        );
+        stop();
+        assert_eq!(std::fs::read(&path).unwrap(), uploaded);
+    }
+
+    #[test]
+    fn clearing_an_icon_ignores_the_current_manual_file_until_it_changes() {
+        use vesta_state::server_icon::{FILE_NAME, reconcile};
+        for upload in [false, true] {
+            let f = Fixture::new();
+            let host = f.handle.authorize(f.subject.clone()).unwrap();
+            let game = std::fs::canonicalize(f._temp.path().join("game")).unwrap();
+            let path = game.join(FILE_NAME);
+            let manual = manual_icon();
+            let uploaded = vesta_control::motd::fallback_icon();
+            let get = |leaf| f.request(f.subject.clone(), leaf, None);
+
+            std::fs::write(&path, &manual).unwrap();
+            let mut current = get("server/game-icon");
+            if upload {
+                assert!(
+                    f.change_icon(&Method::PUT, "upload-before-clear", &uploaded, None)
+                        .status()
+                        .is_success()
+                );
+                current = get("server/icon");
+            }
+            let tag = current.headers()["etag"].to_str().unwrap();
+            assert!(
+                f.change_icon(&Method::DELETE, "clear-branding-icon", b"", Some(tag))
+                    .status()
+                    .is_success()
+            );
+            reconcile(host.database().directory().path(), &game).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), manual);
+            assert_eq!(get("server/game-icon").status(), 404);
+            assert_eq!(get("server/icon").status(), 404);
+
+            std::fs::write(&path, &uploaded).unwrap();
+            assert!(
+                matches!(get("server/game-icon").body(), crate::ReplyBody::Bytes(bytes) if bytes == &uploaded)
+            );
+        }
     }
 
     #[test]
@@ -379,20 +560,31 @@ mod tests {
         let f = Fixture::new();
         let preview = |path| f.request(f.subject.clone(), "files/image-preview", Some(path));
         let game = f._temp.path().join("game");
-        std::fs::write(game.join("preview.bin"), vesta_control::motd::fallback_icon()).unwrap();
+        std::fs::write(
+            game.join("preview.bin"),
+            vesta_control::motd::fallback_icon(),
+        )
+        .unwrap();
         let response = preview("path=preview.bin");
         assert_eq!(response.status(), 200);
         assert_eq!(response.headers()["content-type"], "image/png");
         std::fs::write(game.join("active.png"), "<svg onload='alert(1)'/>").unwrap();
         assert_eq!(preview("path=active.png").status(), 415);
-        std::fs::File::create(game.join("large.png")).unwrap().set_len(8 * 1024 * 1024 + 1).unwrap();
+        std::fs::File::create(game.join("large.png"))
+            .unwrap()
+            .set_len(8 * 1024 * 1024 + 1)
+            .unwrap();
         assert_eq!(preview("path=large.png").status(), 413);
     }
 
     #[test]
     fn host_owner_can_toggle_whitelist_sync_without_changing_access_sources() {
         let f = Fixture::new();
-        assert_eq!(f.request(f.subject.clone(), "access-sources", None).status(), 403);
+        assert_eq!(
+            f.request(f.subject.clone(), "access-sources", None)
+                .status(),
+            403
+        );
         let mut policy = f.policy.clone();
         policy.generation = 2;
         policy.access_sources_accounts.insert(f.subject.account_id);
@@ -404,45 +596,80 @@ mod tests {
         policy.generation = 3;
         policy.access_sources_accounts.clear();
         policy.grants[0].role = ServerRole::Owner;
-        policy.grants[0].capabilities = BuiltinRole::Owner.capabilities().iter()
-            .filter(|capability| !capability.local_only()).map(|capability| capability.id().into()).collect();
-        policy.whitelist_owners.insert(f.subject.account_id, "VerifiedOwner".into());
+        policy.grants[0].capabilities = BuiltinRole::Owner
+            .capabilities()
+            .iter()
+            .filter(|capability| !capability.local_only())
+            .map(|capability| capability.id().into())
+            .collect();
+        policy
+            .whitelist_owners
+            .insert(f.subject.account_id, "VerifiedOwner".into());
         f.handle.sync_policy(policy.clone()).unwrap();
         let mut subject = f.subject.clone();
         subject.generation = policy.generation;
         subject.capabilities = policy.grants[0].capabilities.clone();
         let response = f.request(subject.clone(), "access-sources", None);
         assert_eq!(response.status(), 200);
-        let crate::ReplyBody::Bytes(bytes) = response.body() else { panic!("expected JSON"); };
+        let crate::ReplyBody::Bytes(bytes) = response.body() else {
+            panic!("expected JSON");
+        };
         let response: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         let version = &response["data"]["version"];
         assert!(version.is_string(), "{response}");
         let patch = |key, body: serde_json::Value| {
-            dispatch_inner(&f.handle, subject.clone(), WorkerRequest {
-                method: &Method::PATCH,
-                path: "access-sources",
-                query: None,
-                body: &serde_json::to_vec(&body).unwrap(),
-                idempotency_key: Some(key),
-                if_match: None, if_none_match: None, range: None, if_range: None,
-            })
+            dispatch_inner(
+                &f.handle,
+                subject.clone(),
+                WorkerRequest {
+                    method: &Method::PATCH,
+                    path: "access-sources",
+                    query: None,
+                    body: &serde_json::to_vec(&body).unwrap(),
+                    idempotency_key: Some(key),
+                    if_match: None,
+                    if_none_match: None,
+                    range: None,
+                    if_range: None,
+                },
+            )
         };
-        let denied = patch("whitelist-worker-denied", serde_json::json!({"expected_version":version,"anonymous":"player"}));
+        let denied = patch(
+            "whitelist-worker-denied",
+            serde_json::json!({"expected_version":version,"anonymous":"player"}),
+        );
         assert_eq!(denied.status(), 403);
-        let changed = patch("whitelist-worker-toggle", serde_json::json!({"expected_version":version,"sync_whitelist":true}));
+        let changed = patch(
+            "whitelist-worker-toggle",
+            serde_json::json!({"expected_version":version,"sync_whitelist":true}),
+        );
         assert_eq!(changed.status(), 200);
-        let crate::ReplyBody::Bytes(bytes) = changed.body() else { panic!("expected JSON"); };
+        let crate::ReplyBody::Bytes(bytes) = changed.body() else {
+            panic!("expected JSON");
+        };
         let response: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-        assert_eq!(response["data"]["settings"]["sync_whitelist"], true, "{response}");
-        assert_eq!(response["data"]["settings"]["auto_whitelist_roles"], serde_json::json!(["*"]));
+        assert_eq!(
+            response["data"]["settings"]["sync_whitelist"], true,
+            "{response}"
+        );
+        assert_eq!(
+            response["data"]["settings"]["auto_whitelist_roles"],
+            serde_json::json!(["*"])
+        );
         let version = &response["data"]["version"];
-        let invalid = patch("whitelist-worker-invalid", serde_json::json!({
-            "expected_version":version,"auto_whitelist_roles":["unknown"]
-        }));
+        let invalid = patch(
+            "whitelist-worker-invalid",
+            serde_json::json!({
+                "expected_version":version,"auto_whitelist_roles":["unknown"]
+            }),
+        );
         assert_eq!(invalid.status(), 400);
-        let changed = patch("whitelist-worker-roles", serde_json::json!({
-            "expected_version":version,"auto_whitelist_roles":["owner","viewer"]
-        }));
+        let changed = patch(
+            "whitelist-worker-roles",
+            serde_json::json!({
+                "expected_version":version,"auto_whitelist_roles":["owner","viewer"]
+            }),
+        );
         assert_eq!(changed.status(), 200);
     }
 
@@ -454,46 +681,71 @@ mod tests {
         let whitelist = game.join("whitelist.json");
         let manual = Uuid::new_v4();
         let automatic = Uuid::new_v4();
-        std::fs::write(&whitelist, serde_json::to_vec(&serde_json::json!([
-            {"uuid":manual,"name":"Manual"}
-        ])).unwrap()).unwrap();
+        std::fs::write(
+            &whitelist,
+            serde_json::to_vec(&serde_json::json!([
+                {"uuid":manual,"name":"Manual"}
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
 
         let mut policy = f.policy.clone();
         policy.generation += 1;
         policy.grants[0].role = ServerRole::Owner;
-        policy.grants[0].capabilities = ServerRole::Owner.capabilities().map(|c| c.id().into()).collect();
-        policy.whitelist_roles.entry("viewer".into()).or_default().extend([
-            (manual, "Manual".into()),
-            (automatic, "Automatic".into()),
-        ]);
+        policy.grants[0].capabilities = ServerRole::Owner
+            .capabilities()
+            .map(|c| c.id().into())
+            .collect();
+        policy
+            .whitelist_roles
+            .entry("viewer".into())
+            .or_default()
+            .extend([(manual, "Manual".into()), (automatic, "Automatic".into())]);
         f.handle.sync_policy(policy.clone()).unwrap();
         let mut subject = f.subject.clone();
         subject.generation = policy.generation;
         subject.capabilities = policy.grants[0].capabilities.clone();
         let response = f.request(subject.clone(), "access-sources", None);
-        let crate::ReplyBody::Bytes(bytes) = response.body() else { panic!("expected JSON"); };
+        let crate::ReplyBody::Bytes(bytes) = response.body() else {
+            panic!("expected JSON");
+        };
         let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         let body = serde_json::to_vec(&serde_json::json!({
             "expected_version":value["data"]["version"],"auto_whitelist_roles":["viewer"],
-        })).unwrap();
-        let response = dispatch_inner(&f.handle, subject, WorkerRequest {
-            method: &Method::PATCH,
-            path: "access-sources",
-            query: None,
-            body: &body,
-            idempotency_key: Some("whitelist-worker-select-viewer"),
-            if_match: None, if_none_match: None, range: None, if_range: None,
-        });
+        }))
+        .unwrap();
+        let response = dispatch_inner(
+            &f.handle,
+            subject,
+            WorkerRequest {
+                method: &Method::PATCH,
+                path: "access-sources",
+                query: None,
+                body: &body,
+                idempotency_key: Some("whitelist-worker-select-viewer"),
+                if_match: None,
+                if_none_match: None,
+                range: None,
+                if_range: None,
+            },
+        );
         assert_eq!(response.status(), 200);
         let wait_for_list = |expected: &[&str]| {
             let until = std::time::Instant::now() + Duration::from_secs(8);
             loop {
-                let names: Vec<_> = vesta_control::moderation::whitelist(&game).unwrap()
-                    .into_iter().map(|entry| entry.name).collect();
+                let names: Vec<_> = vesta_control::moderation::whitelist(&game)
+                    .unwrap()
+                    .into_iter()
+                    .map(|entry| entry.name)
+                    .collect();
                 if names == expected {
                     break;
                 }
-                assert!(std::time::Instant::now() < until, "observed {names:?}, expected {expected:?}");
+                assert!(
+                    std::time::Instant::now() < until,
+                    "observed {names:?}, expected {expected:?}"
+                );
                 std::thread::sleep(Duration::from_millis(25));
             }
         };
@@ -649,50 +901,118 @@ pub(crate) fn dispatch_host(
     peer: std::net::IpAddr,
     downloads: std::sync::Arc<crate::Downloads<vesta_control::pack_access::RealtimeSession>>,
 ) -> crate::Reply {
-    let server=subject.server_id;
-    let host=match worker.authorize(subject.clone()){Ok(h)=>h,Err(e)=>return crate::manage::management_error(e)};
+    let server = subject.server_id;
+    let host = match worker.authorize(subject.clone()) {
+        Ok(h) => h,
+        Err(e) => return crate::manage::management_error(e),
+    };
     // Imported/created workers have no per-server HTTPS listener to bind this
     // handle. Async management (software plans, Java and hosting) runs on the
     // owning host transport runtime for the lifetime of the host listener.
     if let Ok(runtime) = tokio::runtime::Handle::try_current() {
         host.sftp().set_owner_runtime(runtime);
     }
-    let path=request.path;
-    let mut reply=if let Some(suffix)=path.strip_prefix("manage/") {
-        if matches!(suffix,"pack/sync"|"pack/artifact") {
-            crate::pack_sync::dispatch(&host,request.method,&format!("/api/v3/manage/{suffix}"),request.query,Some("trusted-worker"),crate::routes::Requester {downloads:downloads.clone(),peer},&tls)
-        }else {request.path=suffix;dispatch_authorized(&host,request,Some(server_name))}
-    } else if (path.starts_with("pack/") || path=="status") && *request.method==Method::GET {
-        let mapped=if path=="status"{"/api/v3/status".to_owned()}else{format!("/api/v2/{path}")};
-        crate::routes::dispatch(&host,&mapped,request.query,Some("trusted-worker"),request.body,crate::routes::Requester{downloads:downloads.clone(),peer},tls.clone())
-    } else if path=="discovery" && *request.method==Method::POST {
-        match vesta_protocol::discovery::decode_request(request.body).and_then(|r|host.discover(&r)).and_then(|m|vesta_protocol::discovery::encode_manifest(&m)) {
-            Ok(bytes)=>crate::response(http::StatusCode::OK,bytes,"application/json"),Err(_)=>crate::manage::error(http::StatusCode::BAD_REQUEST,"invalid_request")
+    let path = request.path;
+    let mut reply = if let Some(suffix) = path.strip_prefix("manage/") {
+        if matches!(suffix, "pack/sync" | "pack/artifact") {
+            crate::pack_sync::dispatch(
+                &host,
+                request.method,
+                &format!("/api/v3/manage/{suffix}"),
+                request.query,
+                Some("trusted-worker"),
+                crate::routes::Requester {
+                    downloads: downloads.clone(),
+                    peer,
+                },
+                &tls,
+            )
+        } else {
+            request.path = suffix;
+            dispatch_authorized(&host, request, Some(server_name))
         }
-    } else if path=="status" && *request.method==Method::GET {
-        let mut r=request;r.path="server/status";dispatch_inner(worker,subject,r)
-    } else {crate::manage::error(http::StatusCode::NOT_FOUND,"not_found")};
+    } else if (path.starts_with("pack/") || path == "status") && *request.method == Method::GET {
+        let mapped = if path == "status" {
+            "/api/v3/status".to_owned()
+        } else {
+            format!("/api/v2/{path}")
+        };
+        crate::routes::dispatch(
+            &host,
+            &mapped,
+            request.query,
+            Some("trusted-worker"),
+            request.body,
+            crate::routes::Requester {
+                downloads: downloads.clone(),
+                peer,
+            },
+            tls.clone(),
+        )
+    } else if path == "discovery" && *request.method == Method::POST {
+        match vesta_protocol::discovery::decode_request(request.body)
+            .and_then(|r| host.discover(&r))
+            .and_then(|m| vesta_protocol::discovery::encode_manifest(&m))
+        {
+            Ok(bytes) => crate::response(http::StatusCode::OK, bytes, "application/json"),
+            Err(_) => crate::manage::error(http::StatusCode::BAD_REQUEST, "invalid_request"),
+        }
+    } else if path == "status" && *request.method == Method::GET {
+        let mut r = request;
+        r.path = "server/status";
+        dispatch_inner(worker, subject, r)
+    } else {
+        crate::manage::error(http::StatusCode::NOT_FOUND, "not_found")
+    };
     // Rewrite only JSON metadata, never artifact/file bodies. Preserve validators.
-    if path!="manage/files/content" && reply.headers().get("content-type").is_some_and(|v|v=="application/json") {
-    if let crate::ReplyBody::Bytes(bytes)=reply.body_mut() {
-        if let Ok(mut value)=serde_json::from_slice::<serde_json::Value>(bytes) {
-            fn rewrite(v:&mut serde_json::Value,server:uuid::Uuid) {
-                match v {
-                    serde_json::Value::Object(map)=>for (key,value) in map {if key=="server_id" {*value=serde_json::json!(server);}else{rewrite(value,server)}},
-                    serde_json::Value::Array(a)=>for v in a {rewrite(v,server)},
-                    serde_json::Value::String(s) if !s.contains("/v1/servers/")=>{
-                        for (old,new) in [("/api/v3/manage/","manage/"),("/api/v2/pack/","pack/"),("/resource-packs/","resource-packs/")] {
-                            if let Some(at)=s.find(old) {s.replace_range(at..at+old.len(),&format!("/v1/servers/{server}/{new}"));break;}
+    if path != "manage/files/content"
+        && reply
+            .headers()
+            .get("content-type")
+            .is_some_and(|v| v == "application/json")
+    {
+        if let crate::ReplyBody::Bytes(bytes) = reply.body_mut() {
+            if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) {
+                fn rewrite(v: &mut serde_json::Value, server: uuid::Uuid) {
+                    match v {
+                        serde_json::Value::Object(map) => {
+                            for (key, value) in map {
+                                if key == "server_id" {
+                                    *value = serde_json::json!(server);
+                                } else {
+                                    rewrite(value, server)
+                                }
+                            }
                         }
-                    },_=>{}
+                        serde_json::Value::Array(a) => {
+                            for v in a {
+                                rewrite(v, server)
+                            }
+                        }
+                        serde_json::Value::String(s) if !s.contains("/v1/servers/") => {
+                            for (old, new) in [
+                                ("/api/v3/manage/", "manage/"),
+                                ("/api/v2/pack/", "pack/"),
+                                ("/resource-packs/", "resource-packs/"),
+                            ] {
+                                if let Some(at) = s.find(old) {
+                                    s.replace_range(
+                                        at..at + old.len(),
+                                        &format!("/v1/servers/{server}/{new}"),
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 }
+                rewrite(&mut value, server);
+                *bytes = serde_json::to_vec(&value).unwrap().into();
+                let len = bytes.len();
+                reply.headers_mut().insert("content-length", len.into());
             }
-            rewrite(&mut value,server);
-            *bytes=serde_json::to_vec(&value).unwrap().into();
-            let len=bytes.len();
-            reply.headers_mut().insert("content-length",len.into());
         }
-    }
     }
     reply
 }

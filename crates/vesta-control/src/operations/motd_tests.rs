@@ -2,7 +2,7 @@ use super::*;
 use base64::{Engine, engine::general_purpose::STANDARD};
 
 #[test]
-fn motd_icon_projects_while_stopped_and_before_start() {
+fn motd_icon_projects_while_stopped_and_clears_on_stop() {
     let mut h = Harness::new(false);
     let files = crate::files::FileBrowser::open(h.db.clone(), &h.cwd, &[]).unwrap();
     h.operations = h.operations.clone().with_content(files);
@@ -20,7 +20,6 @@ fn motd_icon_projects_while_stopped_and_before_start() {
     wait_for(|| icon.is_file());
     assert_eq!(fs::read(&icon).unwrap(), png);
 
-    fs::remove_file(&icon).unwrap();
     start(&h, &owned.runtime);
     assert_eq!(fs::read(&icon).unwrap(), png);
     let revision = h

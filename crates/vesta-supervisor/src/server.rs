@@ -1826,10 +1826,13 @@ mod lease_tests {
         let db =
             vesta_state::StateDatabase::open(state, Arc::new(vesta_state::SystemClock)).unwrap();
         let icon = game.join(vesta_state::server_icon::FILE_NAME);
-        db.write(|c| vesta_state::server_icon::store(c, Some(&game), Some(b"updated icon")))
-            .unwrap();
+        std::fs::write(&icon, b"manual icon").unwrap();
+        db.write(|c| {
+            vesta_state::server_icon::store_branding(c, &game, Some(b"updated icon"), true)
+        })
+        .unwrap();
         core.observe();
-        assert!(!icon.exists());
+        assert_eq!(std::fs::read(&icon).unwrap(), b"manual icon");
         core.process
             .stop(fixture.id, Duration::from_secs(5))
             .unwrap();
@@ -1848,6 +1851,10 @@ mod lease_tests {
         core.observe();
         assert!(core.process.snapshot().generation.is_some());
         assert_eq!(std::fs::read(&icon).unwrap(), b"updated icon");
+        assert_eq!(
+            std::fs::read(game.join(vesta_state::server_icon::BACKUP_NAME)).unwrap(),
+            b"manual icon"
+        );
     }
 
     #[test]
