@@ -107,6 +107,19 @@ export function prRustShards(scope, selection) {
     .flatMap(([, os, count]) => Array.from({length: count}, (_, shard) => ({os, shard})));
 }
 
+// Seed the new key from the last successful protected-main build while its
+// Cargo inputs still match. Future main builds save under the new key.
+export function legacyRustCacheKeys(base, files) {
+  const main = '5739d92b50d5050758c404503d117726eabfebd0';
+  if (base !== main || files.some(file => /(?:^|\/)(?:Cargo\.(?:toml|lock)|rust-toolchain\.toml)$|(?:^|\/)\.cargo\//.test(file))) {
+    return {};
+  }
+  return {
+    legacy_linux_cache: `trusted-ci-Linux-rust-1.96.0-31d9655438a61b3dec0b0c9042df84de0fd2463a292e427c1c57ca3d417d3feb-${main}`,
+    legacy_windows_cache: `trusted-ci-Windows-rust-1.96.0-0e546f20423a1388e0fadf6cd74c68a9bf0cb723e9fad0a2c9ffc24b40357254-${main}`,
+  };
+}
+
 // A '+' root changes production code. Include its transitive consumers, even
 // through build, dev or target-specific dependencies. Manifests and lockfiles
 // select the full gate above, so the current graph is valid for either side.
@@ -201,7 +214,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (process.env.CI_EVENT === 'pull_request' && files !== null && (process.env.CI_RELEASE_SCOPE || 'none') === 'none') {
     const selection = prRustSelection(files);
     const shards = prRustShards(result.rust_scope, selection);
-    Object.assign(result, selection, {
+    Object.assign(result, selection, legacyRustCacheKeys(process.env.CI_BASE, files), {
       pr_rust_shard: shards.length > 0,
       pr_rust_shard_matrix: JSON.stringify({include: shards}),
       pr_rust_linux_shard_count: shards.filter(shard => shard.os === 'ubuntu-24.04').length,

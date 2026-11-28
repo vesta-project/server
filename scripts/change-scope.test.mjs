@@ -53,6 +53,18 @@ test('shards cover whole-workspace and slow affected suites on the selected plat
   assert.deepEqual(plan(['README.md']), []);
 });
 
+test('legacy cache restores require the known main baseline and matching Cargo inputs', () => {
+  const base = '5739d92b50d5050758c404503d117726eabfebd0';
+  const keys = scopeModule.legacyRustCacheKeys(base, ['.github/workflows/ci.yml']);
+  assert.match(keys.legacy_linux_cache, /^trusted-ci-Linux-rust-1\.96\.0-/);
+  assert.match(keys.legacy_windows_cache, /^trusted-ci-Windows-rust-1\.96\.0-/);
+  assert.ok(Object.values(keys).every(key => key.endsWith(base)));
+  assert.deepEqual(scopeModule.legacyRustCacheKeys('a'.repeat(40), []), {});
+  for (const file of ['Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'crates/vesta-protocol/Cargo.toml']) {
+    assert.deepEqual(scopeModule.legacyRustCacheKeys(base, [file]), {}, file);
+  }
+});
+
 test('source changes include downstream target-specific, development and build dependencies', () => {
   const pkg = (name, dir, dependencies = []) => ({name, manifest_path: `/workspace/${dir}/Cargo.toml`, dependencies});
   const dependency = (dir, kind, target = null) => ({path: `/workspace/${dir}`, kind, target});

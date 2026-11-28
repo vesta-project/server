@@ -68,6 +68,11 @@ test('cache writes require successful protected main, never PR writes, cache err
   assert.match(ci, /prefix=trusted-ci-v2-\$PLATFORM-rust-1\.96\.0-debug-.*\$CI_LAUNCHER_REVISION-\$CARGO_INPUTS-/);
   assert.equal((ci.match(/key: \$\{\{ steps.cache-profile.outputs.prefix \}\}\$\{\{ github.sha \}\}/g) || []).length, 2);
   assert.match(ci, /ref: \$\{\{ env.CI_LAUNCHER_REVISION \}\}/);
+  const profile = workflowStep('Identify Rust cache profile');
+  assert.match(profile, /CI_LAUNCHER_REVISION == [0-9a-f]{40}/);
+  assert.match(profile, /ubuntu-24\.04-X64\) echo "legacy_key=\$LEGACY_LINUX"/);
+  assert.match(profile, /windows-2025-X64\) echo "legacy_key=\$LEGACY_WINDOWS"/);
+  assert.match(workflowStep('Restore trusted main Rust cache'), /restore-keys: \|\s+\$\{\{ steps.cache-profile.outputs.prefix \}\}\s+\$\{\{ steps.cache-profile.outputs.legacy_key \}\}/);
 });
 test('actual scope shell selects bounded package arguments, unknown values fall back to workspace', async t => {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'vesta-ci-scope-'));

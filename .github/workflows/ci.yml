@@ -33,6 +33,8 @@ jobs:
       pr_rust_shard_matrix: ${{ steps.scope.outputs.pr_rust_shard_matrix }}
       pr_rust_linux_shard_count: ${{ steps.scope.outputs.pr_rust_linux_shard_count }}
       pr_rust_windows_shard_count: ${{ steps.scope.outputs.pr_rust_windows_shard_count }}
+      legacy_linux_cache: ${{ steps.scope.outputs.legacy_linux_cache }}
+      legacy_windows_cache: ${{ steps.scope.outputs.legacy_windows_cache }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -131,8 +133,16 @@ jobs:
         env:
           PLATFORM: ${{ matrix.os }}-${{ runner.arch }}
           CARGO_INPUTS: ${{ hashFiles('server/Cargo.lock', 'server/**/Cargo.toml', 'server/.cargo/**', 'server/rust-toolchain.toml') }}
+          LEGACY_LINUX: ${{ needs.scope.outputs.legacy_linux_cache }}
+          LEGACY_WINDOWS: ${{ needs.scope.outputs.legacy_windows_cache }}
         run: |
           echo "prefix=trusted-ci-v2-$PLATFORM-rust-1.96.0-debug-${CARGO_PROFILE_DEV_DEBUG}-${CARGO_PROFILE_TEST_DEBUG}-incremental-$CARGO_INCREMENTAL-$CI_LAUNCHER_REVISION-$CARGO_INPUTS-" >> "$GITHUB_OUTPUT"
+          if [[ $CI_LAUNCHER_REVISION == 930f21dd465453e90af16548eee4db3d53828986 && $CARGO_PROFILE_DEV_DEBUG == 0 && $CARGO_PROFILE_TEST_DEBUG == 0 && $CARGO_INCREMENTAL == 0 ]]; then
+            case "$PLATFORM" in
+              ubuntu-24.04-X64) echo "legacy_key=$LEGACY_LINUX" >> "$GITHUB_OUTPUT" ;;
+              windows-2025-X64) echo "legacy_key=$LEGACY_WINDOWS" >> "$GITHUB_OUTPUT" ;;
+            esac
+          fi
 
       - &rust-cache
         name: Restore trusted main Rust cache
@@ -148,6 +158,7 @@ jobs:
           key: ${{ steps.cache-profile.outputs.prefix }}${{ github.sha }}
           restore-keys: |
             ${{ steps.cache-profile.outputs.prefix }}
+            ${{ steps.cache-profile.outputs.legacy_key }}
 
       - &rust-packages
         name: Select Rust scope
