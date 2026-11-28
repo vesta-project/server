@@ -44,23 +44,24 @@ export function parseLibtestList(output) {
   return names;
 }
 
-export function partitionSuites(suites, count) {
+export function partitionSuites(suites, count, estimate = () => 1) {
   if (!Number.isInteger(count) || count < 1) throw new Error('Invalid shard count');
-  const shards = Array.from({length: count}, () => []);
-  // Round-robin across test names, offsetting each suite. Large test binaries
-  // are split across isolated workers and small binaries are spread between them.
-  let offset = 0;
-  for (const suite of suites) {
-    const start = offset;
-    for (const [index, shard] of shards.entries()) {
-      const names = suite.names.filter((_, i) => (start + i) % count === index);
-      if (names.length || (index === start && suite.names.length === 0)) {
-        shard.push({ executable: suite.executable, cwd: suite.cwd, names });
-      }
-    }
-    offset = (offset + Math.max(1, suite.names.length)) % count;
+  const shards = Array.from({length: count}, () => ({seconds: 0, suites: new Map()}));
+  const cases = suites.flatMap((suite, index) => (suite.names.length ? suite.names : [null]).map(name => ({
+    index, name, seconds: name === null ? 0.01 : estimate(suite, name),
+  })));
+  // Schedule the most expensive cases first on the least loaded runner. The
+  // estimates only affect ordering; every listed case still gets one shard.
+  cases.sort((a, b) => b.seconds - a.seconds);
+  for (const {index, name, seconds} of cases) {
+    const shard = shards.reduce((least, next) => next.seconds < least.seconds ? next : least);
+    shard.seconds += seconds;
+    if (!shard.suites.has(index)) shard.suites.set(index, []);
+    if (name !== null) shard.suites.get(index).push(name);
   }
-  return shards;
+  return shards.map(shard => [...shard.suites.entries()].sort(([a], [b]) => a - b).map(([index, names]) => ({
+    executable: suites[index].executable, cwd: suites[index].cwd, names,
+  })));
 }
 
 export function testArguments(names) {
@@ -97,11 +98,24 @@ function prepare(messagesFile, target, count) {
     })),
   }));
   if (suites.length === 0) throw new Error('Cargo reported no test executables');
-  const shards = partitionSuites(suites, count);
+  const timings = JSON.parse(fs.readFileSync(new URL('./fixtures/ci-rust-test-timings.json', import.meta.url), 'utf8'));
+  const platform = timings.platforms.indexOf(process.platform);
+  const estimate = (suite, name) => {
+    const measured = timings.seconds[name]?.[platform];
+    if (typeof measured === 'number' && measured > 0) return measured;
+    const executable = path.posix.basename(suite.executable);
+    if (executable.startsWith('https-')) return 2.2;
+    if (executable.startsWith('vesta_transport-')) return 1.1;
+    return 0.5;
+  };
+  const shards = partitionSuites(suites, count, estimate);
   fs.writeFileSync(archive, JSON.stringify({commit: gitHead(), workspace, shards}));
   for (const file of files) process.stdout.write(`${file.executable}\n`);
   process.stdout.write(`${inside(workspace, archive)}\n`);
   console.error(`Planned ${suites.reduce((sum, suite) => sum + suite.names.length, 0)} test cases in ${suites.length} executables across ${count} shards`);
+  const estimates = shards.map(shard => Math.round(shard.reduce((total, suite) => total
+    + suite.names.reduce((seconds, name) => seconds + estimate(suite, name), 0), 0)));
+  console.error(`Estimated seconds per shard: ${estimates.join(', ')}`);
 }
 
 function run(manifest, index) {

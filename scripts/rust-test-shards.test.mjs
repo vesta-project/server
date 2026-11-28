@@ -42,6 +42,12 @@ test('partitions cover every listed case exactly once and preserve empty harness
   assert.throws(() => parseLibtestList('x: test\nx: test'), /Duplicate/);
 });
 
+test('historical timings split expensive cases without losing any tests', () => {
+  const suite = {executable: 'unit', cwd: 'crate', names: ['long_a', 'quick_a', 'long_b', 'quick_b']};
+  const shards = partitionSuites([suite], 2, (_, name) => name.startsWith('long') ? 30 : 1);
+  assert.deepEqual(shards.map(shard => shard[0].names), [['long_a', 'quick_a'], ['long_b', 'quick_b']]);
+});
+
 test('batches are serial and use exact names within the Windows command-line budget', () => {
   const names = Array.from({length: 750}, (_, i) => `group::test_case_${i}`);
   const batches = testArguments(names);
