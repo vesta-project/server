@@ -88,11 +88,11 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-2025]
     runs-on: ${{ matrix.os }}
-    env:
+    env: &rust-env
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
-    defaults:
+    defaults: &rust-defaults
       run:
         shell: bash
         working-directory: server
@@ -102,13 +102,15 @@ jobs:
         working-directory: .
         run: exit 1
 
-      - name: Checkout
+      - &rust-checkout
+        name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: server
           persist-credentials: false
 
-      - name: Checkout pinned shared sandbox source
+      - &rust-launcher
+        name: Checkout pinned shared sandbox source
         if: needs.scope.outputs.rust_scope != 'none'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -117,11 +119,13 @@ jobs:
           path: launcher
           persist-credentials: false
 
-      - name: Select verified development toolchain
+      - &rust-toolchain
+        name: Select verified development toolchain
         if: needs.scope.outputs.rust_scope != 'none'
         run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
 
-      - name: Identify Rust cache profile
+      - &rust-cache-profile
+        name: Identify Rust cache profile
         if: needs.scope.outputs.rust_scope != 'none'
         id: cache-profile
         env:
@@ -130,7 +134,8 @@ jobs:
         run: |
           echo "prefix=trusted-ci-v2-$PLATFORM-rust-1.96.0-debug-${CARGO_PROFILE_DEV_DEBUG}-${CARGO_PROFILE_TEST_DEBUG}-incremental-$CARGO_INCREMENTAL-$CI_LAUNCHER_REVISION-$CARGO_INPUTS-" >> "$GITHUB_OUTPUT"
 
-      - name: Restore trusted main Rust cache
+      - &rust-cache
+        name: Restore trusted main Rust cache
         if: needs.scope.outputs.rust_scope != 'none'
         id: rust-cache
         continue-on-error: true
@@ -144,7 +149,8 @@ jobs:
           restore-keys: |
             ${{ steps.cache-profile.outputs.prefix }}
 
-      - name: Select Rust scope
+      - &rust-packages
+        name: Select Rust scope
         if: needs.scope.outputs.rust_scope != 'none'
         id: packages
         env:
@@ -165,7 +171,7 @@ jobs:
           echo "test_mode=$test_mode" >> "$GITHUB_OUTPUT"
 
       - name: Check formatting
-        if: needs.scope.outputs.rust_scope != 'none'
+        if: needs.scope.outputs.rust_scope != 'none' && needs.scope.outputs.pr_rust_shard != 'true'
         run: rustup run 1.96.0 cargo fmt --all -- --check
 
       - name: Check all targets
@@ -175,7 +181,7 @@ jobs:
         run: rustup run 1.96.0 cargo check ${{ steps.packages.outputs.args }} --all-targets --locked
 
       - name: Run strict all-target Clippy
-        if: needs.scope.outputs.rust_scope != 'none'
+        if: needs.scope.outputs.rust_scope != 'none' && needs.scope.outputs.pr_rust_shard != 'true'
         run: rustup run 1.96.0 cargo clippy ${{ steps.packages.outputs.args }} --all-targets --locked -- -D warnings
 
       - name: Run Rust tests
@@ -210,15 +216,11 @@ jobs:
           compression-level: 1
           overwrite: true
 
-      - name: Run Rust documentation tests
-        if: steps.packages.outputs.test_mode == 'sharded'
-        run: rustup run 1.96.0 cargo test ${{ steps.packages.outputs.args }} --locked --doc -- --test-threads=1
-
       - name: Report tests routed to the other platform
         if: steps.packages.outputs.test_mode == 'skip'
         env:
           TEST_PLATFORM: ${{ needs.scope.outputs.pr_rust_platform }}
-        run: echo "Rust tests run on $TEST_PLATFORM. This runner checked formatting and compiled all selected targets with strict Clippy."
+        run: echo "Rust test execution runs on $TEST_PLATFORM."
 
       - name: Save cache only from successful protected main
         if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected && needs.scope.outputs.rust_scope != 'none' && steps.rust-cache.outputs.cache-hit != 'true'
@@ -234,6 +236,36 @@ jobs:
       - name: Rust checks not applicable to this revision
         if: needs.scope.outputs.rust_scope == 'none'
         run: echo 'No Rust or build-contract changes. Node and bootstrap checks ran in the required test job.'
+
+  rust-pr-checks:
+    needs: scope
+    if: needs.scope.outputs.pr_rust_shard == 'true'
+    name: Rust lint and doctests (${{ matrix.os }})
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    env: *rust-env
+    defaults: *rust-defaults
+    steps:
+      - *rust-checkout
+      - *rust-launcher
+      - *rust-toolchain
+      - *rust-cache-profile
+      - *rust-cache
+      - *rust-packages
+
+      - name: Check PR formatting
+        run: rustup run 1.96.0 cargo fmt --all -- --check
+
+      - name: Run parallel strict all-target Clippy
+        run: rustup run 1.96.0 cargo clippy ${{ steps.packages.outputs.args }} --all-targets --locked -- -D warnings
+
+      - name: Run Rust documentation tests
+        if: steps.packages.outputs.test_mode == 'sharded'
+        run: rustup run 1.96.0 cargo test ${{ steps.packages.outputs.args }} --locked --doc -- --test-threads=1
 
   rust-shards:
     needs: [scope, rust]
@@ -269,7 +301,7 @@ jobs:
           node scripts/rust-test-shards.mjs run target/ci-test-shards.json "$SHARD"
 
   rust-required:
-    needs: [scope, rust, rust-shards]
+    needs: [scope, rust, rust-pr-checks, rust-shards]
     if: ${{ !cancelled() }}
     name: Rust (${{ matrix.os }})
     timeout-minutes: 5
@@ -284,13 +316,16 @@ jobs:
         env:
           SCOPE_RESULT: ${{ needs.scope.result }}
           BUILD_RESULT: ${{ needs.rust.result }}
+          CHECK_RESULT: ${{ needs.rust-pr-checks.result }}
           SHARD_RESULT: ${{ needs.rust-shards.result }}
           SHARDED: ${{ needs.scope.outputs.pr_rust_shard }}
         run: |
           test "$SCOPE_RESULT" = success
           test "$BUILD_RESULT" = success
           if [[ $SHARDED == true ]]; then
+            test "$CHECK_RESULT" = success
             test "$SHARD_RESULT" = success
           else
+            test "$CHECK_RESULT" = skipped
             test "$SHARD_RESULT" = skipped
           fi

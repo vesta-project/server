@@ -6,6 +6,11 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 const ci = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+function workflowStep(name) {
+  const start = ci.indexOf(`name: ${name}\n`);
+  assert.notEqual(start, -1, name);
+  return ci.slice(start).split(/\n      - |\n  [\w-]+:/)[0];
+}
 test('main uses the same CI once and cannot omit pending release validation',async()=>{
   const nightly=await readFile(new URL('../.github/workflows/nightly.yml',import.meta.url),'utf8');
   assert.match(ci,/workflow_call:[\s\S]*release_rust_scope:/);
@@ -24,20 +29,21 @@ test('required job names remain; no Rust change is explicit, classifier failure 
   assert.match(ci, /rust_scope: \$\{\{ steps.scope.outputs.rust_scope \}\}/);
   assert.match(ci, /fetch-depth: 0/);
   for (const name of ['Checkout pinned shared sandbox source', 'Select verified development toolchain', 'Select Rust scope', 'Check formatting', 'Check all targets', 'Run strict all-target Clippy']) {
-    const step = ci.split(`      - name: ${name}\n`)[1].split('\n      - name:')[0];
+    const step = workflowStep(name);
     assert.match(step, /needs\.scope\.outputs\.rust_scope != 'none'/, name);
   }
   assert.match(ci, /name: Rust checks not applicable to this revision/);
   assert.doesNotMatch(ci, /secrets\.CURSEFORGE_API_KEY/);
 });
 test('platform routing affects PR test execution only; both runners keep strict all-target Clippy', () => {
-  const tests = ci.split('      - name: Run Rust tests\n')[1].split('\n      - name:')[0];
+  const tests = workflowStep('Run Rust tests');
   assert.match(tests, /if: steps.packages.outputs.test_mode == 'serial'/);
   assert.match(tests, /--test-threads=1/);
-  const lint = ci.split('      - name: Run strict all-target Clippy\n')[1].split('\n      - name:')[0];
+  const lint = workflowStep('Run strict all-target Clippy');
   assert.doesNotMatch(lint, /pr_rust_platform/);
   assert.match(lint, /--all-targets --locked -- -D warnings/);
-  const check = ci.split('      - name: Check all targets\n')[1].split('\n      - name:')[0];
+  assert.match(lint, /needs\.scope\.outputs\.pr_rust_shard != 'true'/);
+  const check = workflowStep('Check all targets');
   assert.match(check, /github\.event_name != 'pull_request'/);
 });
 test('full-scope PRs build test executables once per OS, run doctests, and require every shard', () => {
@@ -46,8 +52,10 @@ test('full-scope PRs build test executables once per OS, run doctests, and requi
   assert.match(ci, /cargo test \$\{\{ steps.packages.outputs.args \}\} --locked --doc -- --test-threads=1/);
   assert.match(ci, /rust-shards:\n\s+needs: \[scope, rust\]\n\s+if: needs.scope.outputs.pr_rust_shard == 'true'/);
   assert.match(ci, /matrix: \$\{\{ fromJSON\(needs.scope.outputs.pr_rust_shard_matrix\) \}\}/);
-  assert.match(ci, /rust-required:\n\s+needs: \[scope, rust, rust-shards\]\n\s+if: \$\{\{ !cancelled\(\) \}\}/);
-  assert.match(ci, /if \[\[ \$SHARDED == true \]\]; then\s+test "\$SHARD_RESULT" = success\s+else\s+test "\$SHARD_RESULT" = skipped/);
+  assert.match(ci, /rust-pr-checks:\n\s+needs: scope\n\s+if: needs.scope.outputs.pr_rust_shard == 'true'/);
+  assert.match(workflowStep('Run parallel strict all-target Clippy'), /--all-targets --locked -- -D warnings/);
+  assert.match(ci, /rust-required:\n\s+needs: \[scope, rust, rust-pr-checks, rust-shards\]\n\s+if: \$\{\{ !cancelled\(\) \}\}/);
+  assert.match(ci, /if \[\[ \$SHARDED == true \]\]; then\s+test "\$CHECK_RESULT" = success\s+test "\$SHARD_RESULT" = success\s+else\s+test "\$CHECK_RESULT" = skipped\s+test "\$SHARD_RESULT" = skipped/);
 });
 test('cache writes require successful protected main, never PR writes, cache errors cannot skip tests', () => {
   const save = ci.split('      - name: Save cache only from successful protected main')[1];
@@ -64,7 +72,7 @@ test('cache writes require successful protected main, never PR writes, cache err
 test('actual scope shell selects bounded package arguments, unknown values fall back to workspace', async t => {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'vesta-ci-scope-'));
   t.after(() => rm(temp, {recursive:true,force:true}));
-  const step = ci.split('      - name: Select Rust scope\n')[1].split('\n      - name:')[0];
+  const step = workflowStep('Select Rust scope');
   const run = step.split('        run: |\n')[1].trimEnd().split('\n').map(l => l.replace(/^          /, '')).join('\n');
   const bash = process.platform === 'win32' ? path.join(process.env.ProgramFiles ?? 'C:/Program Files', 'Git/bin/bash.exe') : 'bash';
   const cases = [
