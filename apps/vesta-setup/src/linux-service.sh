@@ -142,7 +142,7 @@ p=Path(sys.argv[1]); target=sys.argv[2]
 a=json.loads(p.read_text()) if p.exists() else []
 sys.exit(0 if isinstance(a,list) and target in a else 1)
 PY
-  command -v setfacl >/dev/null || fail 'Install ACL tools first: sudo apt install acl'
+  command -v setfacl >/dev/null && command -v getfacl >/dev/null || fail 'Install ACL tools first: sudo apt install acl'
   echo "Will revoke vesta access from: $source_dir"
   if [[ $yes == false && -t 0 ]]; then
    read -r -p 'Revoke these permissions and unregister the folder? [y/N] ' answer
@@ -153,8 +153,6 @@ PY
 import json,sys
 from pathlib import Path
 p=Path(sys.argv[1]); target=sys.argv[2]
-a=[r for r in (json.loads(p.read_text()) if p.exists() else []) if isinstance(r,str) and r!=target]
-t=p.with_suffix('.tmp'); t.write_text(json.dumps(a)); t.chmod(0o644); t.replace(p)
 sug=Path(sys.argv[1]).parent/'suggested-import.json'
 if sug.exists():
  try:
@@ -176,7 +174,7 @@ PY
  for protected in "$root" /usr/local/lib/vesta; do
   [[ $source_overlap != "$protected" && $source_overlap != "$protected"/* && $protected != "$source_overlap"/* ]] || fail "Import directory overlaps Vesta Server files: $protected"
  done
- command -v setfacl >/dev/null || fail 'Install ACL tools first: sudo apt install acl'
+ command -v setfacl >/dev/null && command -v getfacl >/dev/null || fail 'Install ACL tools first: sudo apt install acl'
  echo "Will grant vesta read/traverse access recursively to: $source_dir"
  echo 'Will grant traverse-only access on each parent. No write access is granted.'
  if [[ $yes == false && -t 0 ]]; then
@@ -184,15 +182,11 @@ PY
   [[ $answer == y || $answer == Y || $answer == yes ]] || fail 'No permissions changed.'
  fi
  /usr/local/lib/vesta/vesta-setup linux-acl add "$source_dir" "$roots_file"
- python3 - "$root" "$source_dir" <<'PY'
+ python3 - "$root" "$source_dir" <<'PY' || echo 'Import folder registered, but the launcher suggestion could not be saved.' >&2
 import json,sys
 from pathlib import Path
-p=Path(sys.argv[1])/"import-roots.json"
-a=json.loads(p.read_text()) if p.exists() else []
-if sys.argv[2] not in a: a.append(sys.argv[2])
 suggestion=Path(sys.argv[1])/"suggested-import.json"
 suggestion.write_text(json.dumps({"path":sys.argv[2]})); suggestion.chmod(0o644)
-t=p.with_suffix('.tmp'); t.write_text(json.dumps(a)); t.chmod(0o644); t.replace(p)
 PY
  if [[ $json == true ]]; then
   echo "{\"added\":\"$source_dir\"}"
@@ -213,22 +207,75 @@ if id vesta >/dev/null 2>&1; then
  shell=$(getent passwd vesta | cut -d: -f7)
  [[ $shell == */nologin || $shell == */false ]] || fail 'Existing vesta account has a login shell; refusing to reuse it.'
 else useradd --system --user-group --home-dir "$root" --shell /usr/sbin/nologin vesta; fi
+install -d -m 755 /usr/local/lib/vesta
+exec {install_lock}</usr/local/lib/vesta
+flock -x "$install_lock"
 if [[ -e /usr/local/lib/vesta/data-root ]]; then
  [[ $(cat /usr/local/lib/vesta/data-root) == "$root" ]] || fail 'A different Vesta data directory is installed; uninstall it first.'
- if [[ $service == true && -f /etc/systemd/system/vesta.service ]]; then systemctl stop vesta.service; fi
 fi
-install -d -m 755 /usr/local/lib/vesta
 install -d -m 750 -o root -g vesta "$root"
 install -d -m 700 -o vesta -g vesta "$root/host" "$root/servers" "$root/java"
-# Install through rename so a running executable is never overwritten in place.
+declare -a stage_dirs=() destinations=() staged=() previous=()
+swapped=0; was_active=false; stopped=false; start_attempted=false
+remove_install_stages() {
+ local directory
+ for directory in "${stage_dirs[@]}"; do rm -rf -- "$directory"; done
+}
+finish_install() {
+ local status=$? i recovered=true
+ trap - EXIT HUP INT TERM
+ if ((status != 0)); then
+  if [[ $start_attempted == true ]]; then
+   systemctl stop vesta.service || recovered=false
+  fi
+  for ((i=swapped-1;i>=0;i--)); do
+   if [[ -e ${staged[i]} ]]; then continue; fi
+   if [[ -e ${previous[i]} || -L ${previous[i]} ]]; then
+    mv -fT -- "${previous[i]}" "${destinations[i]}" || recovered=false
+   else
+    rm -f -- "${destinations[i]}" || recovered=false
+   fi
+  done
+  if [[ $service == true ]] && ((swapped > 0)); then
+   systemctl daemon-reload || recovered=false
+  fi
+  if [[ $was_active == true && $stopped == true ]]; then
+   systemctl start vesta.service || recovered=false
+  fi
+ fi
+ if [[ $recovered == true ]]; then
+  remove_install_stages
+ else
+  echo "Vesta Server: automatic rollback failed. Recovery files: ${stage_dirs[*]}" >&2
+ fi
+ exit "$status"
+}
+trap finish_install EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+stage_file() {
+ local stage=$1 destination=$2 name=${2##*/}
+ destinations+=("$destination")
+ staged+=("$stage/$name")
+ previous+=("$stage/$name.old")
+ if [[ -e $destination || -L $destination ]]; then
+  ln -P -- "$destination" "$stage/$name.old"
+ fi
+}
+lib_stage=$(mktemp -d /usr/local/lib/vesta/.install-XXXXXXXX)
+stage_dirs+=("$lib_stage")
+bin_stage=$(mktemp -d /usr/local/bin/.vesta-install-XXXXXXXX)
+stage_dirs+=("$bin_stage")
 for name in vesta vesta-agent vesta-setup vesta-supervisor; do
- install -m 755 -o root -g root "$binaries/$name" "/usr/local/lib/vesta/$name.new"
- mv -f "/usr/local/lib/vesta/$name.new" "/usr/local/lib/vesta/$name"
+ stage_file "$lib_stage" "/usr/local/lib/vesta/$name"
+ install -m 755 -o root -g root "$binaries/$name" "$lib_stage/$name"
 done
-printf '%s\n' "$root" > /usr/local/lib/vesta/data-root
+stage_file "$lib_stage" /usr/local/lib/vesta/data-root
+printf '%s\n' "$root" > "$lib_stage/data-root"
 # Generate config/identity only once; reruns preserve edits and all host state.
 if [[ $(bash -c '[[ -f $1/host.toml ]] && echo preserve || echo create' -- "$root") == create ]]; then
- /usr/local/lib/vesta/vesta-setup linux-identity "$root"
+ "$lib_stage/vesta-setup" linux-identity "$root"
  interfaces=$(ip -o -4 addr show scope global | awk '$2 != "lo" {print $2}' | sort -u)
  ROOT=$root PORT=$port LOCAL_ONLY=$local_only INTERFACES=$interfaces python3 - <<'PY'
 import json,os
@@ -250,12 +297,13 @@ local_only=$(sed -n 's/^local-only *= *\(true\|false\) *$/\1/p' "$root/host.toml
 if [[ ${explicit[port]:-} == true && $requested_port != "$port" || ${explicit[local_only]:-} == true && $requested_local_only != "$local_only" ]]; then
  echo "NOTE: keeping the existing $root/host.toml (port $port, local-only $local_only). Edit it and run: systemctl restart vesta" >&2
 fi
-cat > /usr/local/bin/vesta <<EOF
+stage_file "$bin_stage" /usr/local/bin/vesta
+cat > "$bin_stage/vesta" <<EOF
 #!/bin/sh
 export VESTA_HOST_STATE='$root/host'
 exec /usr/local/lib/vesta/vesta "\$@"
 EOF
-chmod 755 /usr/local/bin/vesta
+chmod 755 "$bin_stage/vesta"
 if [[ $local_only == false ]]; then
  networks=$(ip -o -4 addr show scope global | awk '$2 != "lo" {print $4}' | python3 -c 'import ipaddress,sys; [print(n) for n in sorted({str(ipaddress.ip_interface(l.strip()).network) for l in sys.stdin if l.strip()})]')
  if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then
@@ -275,13 +323,29 @@ if [[ $local_only == false ]]; then
  fi
 fi
 if [[ $service == true ]]; then
- unit > /etc/systemd/system/vesta.service
- chmod 644 /etc/systemd/system/vesta.service
- systemctl daemon-reload; systemctl enable vesta.service
- [[ $start == false ]] || systemctl start vesta.service
+ unit_stage=$(mktemp -d /etc/systemd/system/.vesta-install-XXXXXXXX)
+ stage_dirs+=("$unit_stage")
+ stage_file "$unit_stage" /etc/systemd/system/vesta.service
+ unit > "$unit_stage/vesta.service"
+ chmod 644 "$unit_stage/vesta.service"
+ if systemctl is-active --quiet vesta.service; then
+  was_active=true
+  stopped=true
+  systemctl stop vesta.service
+ fi
 fi
-# --server-dir is an explicit ACL grant request; reuse the same local admin operation.
-if [[ -n $source_dir ]]; then /usr/local/bin/vesta import-root add "$source_dir" --root "$root" --yes; fi
+# Replace files by rename, keeping the old inodes available until the update is ready.
+for ((i=0;i<${#destinations[@]};i++)); do
+ swapped=$((i+1))
+ mv -fT -- "${staged[i]}" "${destinations[i]}"
+done
+if [[ $service == true ]]; then
+ systemctl daemon-reload
+ if [[ $start == true ]]; then
+  start_attempted=true
+  systemctl start vesta.service
+ fi
+fi
 if [[ $start == true ]]; then
  ready=false
  for ((i=0;i<100;i++)); do
@@ -290,6 +354,14 @@ if [[ $start == true ]]; then
  done
  [[ $ready == true ]] || fail 'Local control channel unavailable; inspect journalctl -u vesta.'
  claimed=$(python3 -c 'import json,sys; print(str(json.loads(sys.argv[1])["claimed"]).lower())' "$status")
+fi
+if [[ $service == true ]]; then systemctl enable vesta.service; fi
+# The installation is committed. An optional import or setup-code failure can be retried separately.
+trap - EXIT HUP INT TERM
+remove_install_stages
+exec {install_lock}<&-
+if [[ -n $source_dir ]]; then /usr/local/bin/vesta import-root add "$source_dir" --root "$root" --yes; fi
+if [[ $start == true ]]; then
  if [[ $claimed == true ]]; then
   echo 'Vesta Server is already claimed. To add another device, run: sudo vesta link'
  else

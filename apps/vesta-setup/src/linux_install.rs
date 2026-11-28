@@ -189,6 +189,137 @@ mod tests {
         assert_eq!(decision(), b"preserve\n");
     }
     #[test]
+    fn linux_upgrade_stages_before_stopping_and_rolls_back_failed_swap() {
+        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
+        for failure in ["stage", "swap", "start", "none"] {
+            let temp = tempfile::Builder::new()
+                .prefix("vesta-upgrade-")
+                .tempdir()
+                .unwrap();
+            let path = temp.path();
+            for directory in ["lib", "bin", "units", "systemd", "host", "payload", "mock"] {
+                fs::create_dir(path.join(directory)).unwrap();
+            }
+            let script = [
+                ("/usr/local/lib/vesta", "lib"),
+                ("/usr/local/bin", "bin"),
+                ("/etc/systemd/system", "units"),
+                ("/run/systemd/system", "systemd"),
+            ]
+            .into_iter()
+            .fold(SCRIPT.to_owned(), |script, (from, to)| {
+                script.replace(from, path.join(to).to_str().unwrap())
+            });
+            let executable = |name: &str, body: &str| {
+                let file = path.join(name);
+                fs::write(&file, body).unwrap();
+                fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
+            };
+            for name in ["vesta", "vesta-agent", "vesta-setup", "vesta-supervisor"] {
+                executable(&format!("payload/{name}"), "new");
+                executable(&format!("lib/{name}"), "old");
+            }
+            fs::write(path.join("bin/vesta"), "old wrapper").unwrap();
+            fs::write(path.join("units/vesta.service"), "old unit").unwrap();
+            fs::write(
+                path.join("lib/data-root"),
+                path.join("host").to_str().unwrap(),
+            )
+            .unwrap();
+            fs::write(path.join("host/host.toml"), "local-only = true\n").unwrap();
+            executable(
+                "mock/id",
+                "#!/bin/bash\nif [[ $* == '-u vesta' ]]; then echo 222; else echo 0; fi\n",
+            );
+            executable(
+                "mock/getent",
+                "#!/bin/bash\necho 'vesta:x:222:222::/:/usr/sbin/nologin'\n",
+            );
+            executable(
+                "mock/install",
+                r#"#!/bin/bash
+args=()
+while (($#)); do
+ case $1 in -o|-g) shift 2;; *) args+=("$1"); shift;; esac
+done
+if [[ $FAILURE == stage && ${args[-1]} == */.install-*/vesta-agent ]]; then exit 1; fi
+exec /usr/bin/install "${args[@]}"
+"#,
+            );
+            executable(
+                "mock/mv",
+                r#"#!/bin/bash
+if [[ $FAILURE == swap && $3 == */.install-*/vesta-agent ]]; then exit 1; fi
+exec /usr/bin/mv "$@"
+"#,
+            );
+            executable(
+                "mock/systemctl",
+                r#"#!/bin/bash
+echo "$*" >> "$TEST_ROOT/calls"
+if [[ $FAILURE == start && $1 == start && $(cat "$TEST_ROOT/lib/vesta-agent") == new ]]; then exit 1; fi
+"#,
+            );
+            executable("payload/vesta", "#!/bin/bash\necho '{\"claimed\":true}'\n");
+            let output = Command::new("bash")
+                .args(["-c", &script, "test", "install"])
+                .arg(path.join("payload"))
+                .arg("--root")
+                .arg(path.join("host"))
+                .env(
+                    "PATH",
+                    format!("{}:/usr/bin:/bin", path.join("mock").display()),
+                )
+                .env("TEST_ROOT", path)
+                .env("FAILURE", failure)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.success(),
+                failure == "none",
+                "{failure}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let calls = fs::read_to_string(path.join("calls")).unwrap_or_default();
+            assert_eq!(
+                calls.contains("stop vesta.service"),
+                failure != "stage",
+                "{failure}: {calls}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                calls.matches("start vesta.service").count(),
+                match failure {
+                    "stage" => 0,
+                    "start" => 2,
+                    _ => 1,
+                },
+                "{calls}"
+            );
+            let expected = if failure == "none" { "new" } else { "old" };
+            assert_eq!(
+                fs::read_to_string(path.join("lib/vesta-agent")).unwrap(),
+                expected
+            );
+            if failure != "none" {
+                assert_eq!(fs::read_to_string(path.join("lib/vesta")).unwrap(), "old");
+                assert_eq!(
+                    fs::read_to_string(path.join("units/vesta.service")).unwrap(),
+                    "old unit"
+                );
+                assert_eq!(
+                    fs::read_to_string(path.join("bin/vesta")).unwrap(),
+                    "old wrapper"
+                );
+            }
+            assert_eq!(
+                fs::read_to_string(path.join("host/host.toml")).unwrap(),
+                "local-only = true\n"
+            );
+        }
+    }
+    #[test]
     fn linux_host_update_never_enters_legacy_consumer_health() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("host")).unwrap();

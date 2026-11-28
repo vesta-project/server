@@ -2,11 +2,16 @@
 #![allow(unsafe_code)]
 use std::{
     fs::{self, File},
+    io::{ErrorKind, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::{ffi::OsStrExt, fs::MetadataExt},
+        unix::{
+            ffi::OsStrExt,
+            fs::{MetadataExt, OpenOptionsExt},
+        },
     },
     path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 struct Entry {
     file: File,
@@ -135,59 +140,232 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if action != "add" && action != "remove" {
         return Err("Unknown ACL action".into());
     }
+    let roots = Path::new(roots);
+    let parent = roots.parent().ok_or("Missing registry directory")?;
+    let registry_dir = File::open(parent).map_err(|e| e.to_string())?;
+    fs2::FileExt::lock_exclusive(&registry_dir).map_err(|e| e.to_string())?;
+    let mut remaining: Vec<String> = match fs::read(roots) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string())?,
+        Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e.to_string()),
+    };
+    if action == "remove" && !remaining.iter().any(|r| r == path) {
+        return Err("That path is not a registered import folder".into());
+    }
     let entries = review(Path::new(path))?;
-    let remaining: Vec<String> = fs::read(roots)
-        .ok()
-        .and_then(|v| serde_json::from_slice(&v).ok())
-        .unwrap_or_default();
-    unchanged(&entries)?;
+    let mut changes = Vec::new();
     for e in &entries {
-        unchanged(&entries)?;
-        if e.path == Path::new("/") {
-            continue;
-        }
-        if action == "remove"
-            && e.parent
-            && remaining
-                .iter()
-                .any(|r| r != path && Path::new(r).starts_with(&e.path))
+        if e.path == Path::new("/")
+            || (action == "remove"
+                && e.parent
+                && remaining
+                    .iter()
+                    .any(|r| r != path && Path::new(r).starts_with(&e.path)))
         {
             continue;
         }
         let rule = if action == "remove" {
-            "u:vesta"
-        } else if e.parent {
-            "u:vesta:--x"
-        } else if e.file.metadata().map_err(|e| e.to_string())?.is_dir() {
-            "u:vesta:r-x"
+            "u:vesta".into()
         } else {
-            "u:vesta:r--"
+            let access = if e.parent {
+                "--x"
+            } else if e.file.metadata().map_err(|e| e.to_string())?.is_dir() {
+                "r-x"
+            } else {
+                "r--"
+            };
+            format!("u:vesta:{access},m::r-x")
         };
-        let fdpath = format!("/proc/{}/fd/{}", std::process::id(), e.file.as_raw_fd());
-        let mask_rule = if action == "add" {
-            format!("{rule},m::r-x")
-        } else {
-            rule.into()
-        };
-        let status = std::process::Command::new("setfacl")
-            .args([
-                "--no-mask",
-                if action == "remove" { "-x" } else { "-m" },
-                &mask_rule,
-                "--",
-                &fdpath,
-            ])
-            .status()
-            .map_err(|e| e.to_string())?;
-        if !status.success() {
-            return Err("Descriptor ACL operation failed".into());
-        }
+        changes.push((e, rule));
     }
-    unchanged(&entries)
+    apply_acl(
+        &entries,
+        &changes,
+        |fdpath, rule| {
+            let status = Command::new("setfacl")
+                .args([
+                    "--no-mask",
+                    if action == "remove" { "-x" } else { "-m" },
+                    rule,
+                    "--",
+                    fdpath,
+                ])
+                .status()
+                .map_err(|e| e.to_string())?;
+            status
+                .success()
+                .then_some(())
+                .ok_or_else(|| "Descriptor ACL operation failed".into())
+        },
+        || {
+            if action == "remove" {
+                remaining.retain(|r| r != path);
+            } else if !remaining.iter().any(|r| r == path) {
+                remaining.push(path.clone());
+            }
+            write_registry(roots, &remaining)
+                .map_err(|e| format!("Could not update import folder registry: {e}"))
+        },
+    )
+}
+
+fn write_registry(path: &Path, roots: &[String]) -> std::io::Result<()> {
+    let stage = path.with_file_name(format!(".import-roots-{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = File::options()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(&stage)?;
+    let result = (|| {
+        serde_json::to_writer(&mut file, roots)?;
+        file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
+        file.sync_all()?;
+        fs::rename(&stage, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(stage);
+    }
+    result
+}
+
+fn apply_acl(
+    entries: &[Entry],
+    changes: &[(&Entry, String)],
+    mut change: impl FnMut(&str, &str) -> Result<(), String>,
+    commit: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    unchanged(entries)?;
+    let mut undo = Vec::new();
+    let result = (|| {
+        for (entry, rule) in changes {
+            unchanged(entries)?;
+            let fdpath = format!("/proc/{}/fd/{}", std::process::id(), entry.file.as_raw_fd());
+            let snapshot = Command::new("getfacl")
+                .args(["--access", "--omit-header", "--numeric", "--", &fdpath])
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !snapshot.status.success() {
+                return Err(format!(
+                    "Could not read ACL for {}: {}",
+                    entry.path.display(),
+                    String::from_utf8_lossy(&snapshot.stderr).trim()
+                ));
+            }
+            undo.push((entry, fdpath.clone(), snapshot.stdout));
+            change(&fdpath, rule)?;
+        }
+        unchanged(entries)?;
+        commit()
+    })();
+    if let Err(mut error) = result {
+        for (entry, fdpath, acl) in undo.into_iter().rev() {
+            if let Err(rollback) = restore_acl(&fdpath, &acl) {
+                error.push_str(&format!(
+                    "; ACL rollback failed for {}: {rollback}",
+                    entry.path.display()
+                ));
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn restore_acl(fdpath: &str, acl: &[u8]) -> Result<(), String> {
+    let mut child = Command::new("setfacl")
+        .args(["--no-mask", "--set-file=-", "--", fdpath])
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let write = child.stdin.take().unwrap().write_all(acl);
+    let status = child.wait().map_err(|e| e.to_string())?;
+    write.map_err(|e| e.to_string())?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| "setfacl failed".into())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linux_acl_restores_existing_entries_on_apply_or_registry_failure() {
+        if Command::new("getfacl").arg("--version").output().is_err()
+            || Command::new("setfacl").arg("--version").output().is_err()
+        {
+            eprintln!("ACL regression requires getfacl and setfacl");
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let entries: Vec<_> = ["first", "second"]
+            .into_iter()
+            .map(|name| {
+                let path = temp.path().join(name);
+                fs::create_dir(&path).unwrap();
+                let file = File::open(&path).unwrap();
+                Entry {
+                    file,
+                    path,
+                    parent: false,
+                }
+            })
+            .collect();
+        assert!(
+            Command::new("setfacl")
+                .args(["-m", "u:65534:--x,d:u:65534:r-x"])
+                .arg(&entries[0].path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let get_acl = |entry: &Entry| {
+            let output = Command::new("getfacl")
+                .args(["-c", "-n", "--"])
+                .arg(&entry.path)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            output.stdout
+        };
+        let originals: Vec<_> = entries.iter().map(get_acl).collect();
+        let changes: Vec<_> = entries
+            .iter()
+            .map(|entry| (entry, "u:65534:r-x,m::r-x".into()))
+            .collect();
+        for fail_apply in [true, false] {
+            let mut applied = 0;
+            let err = apply_acl(
+                &entries,
+                &changes,
+                |fd, rule| {
+                    assert!(
+                        Command::new("setfacl")
+                            .args(["-n", "-m", rule, "--", fd])
+                            .status()
+                            .unwrap()
+                            .success()
+                    );
+                    applied += 1;
+                    if fail_apply && applied == 2 {
+                        return Err("apply failed".into());
+                    }
+                    Ok(())
+                },
+                || Err("registry failed".into()),
+            )
+            .unwrap_err();
+            assert_eq!(
+                err,
+                if fail_apply {
+                    "apply failed"
+                } else {
+                    "registry failed"
+                }
+            );
+            assert_eq!(entries.iter().map(get_acl).collect::<Vec<_>>(), originals);
+        }
+    }
     #[test]
     fn linux_reviewed_ancestor_swap_refused() {
         let home = std::env::var_os("HOME").unwrap();
