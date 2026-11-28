@@ -4,7 +4,7 @@
 //! confirms that every reviewed SHA-1-only object is exactly the `url` and
 //! `sha1` Mojang's own version document (itself verified by the SHA-1 in
 //! Mojang's manifest) publishes for that Minecraft version.
-use super::{List, parse};
+use super::{parse, List};
 use crate::{
     model::*,
     progress::ProgressReporter,

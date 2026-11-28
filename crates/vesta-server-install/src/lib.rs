@@ -22,22 +22,20 @@ mod transfer;
 
 pub use bundle::{ArtifactRecord, BundleReceipt};
 pub use catalogue_cache::{
-    CATALOGUE_CACHE_DISK_BYTES, CATALOGUE_CACHE_DOCUMENT_BYTES, CATALOGUE_CACHE_ENTRIES,
-    CatalogueRecord, CatalogueStore,
+    CatalogueRecord, CatalogueStore, CATALOGUE_CACHE_DISK_BYTES, CATALOGUE_CACHE_DOCUMENT_BYTES,
+    CATALOGUE_CACHE_ENTRIES,
 };
 pub use config::TransportConfig;
 pub use install::{InstallOutcome, InstallRoots, Receipt};
-pub use managed::{ManagedArtifact, ManagedLaunch, verify_managed_artifacts};
+pub use managed::{verify_managed_artifacts, ManagedArtifact, ManagedLaunch};
 pub use model::{
     Acknowledgments, Approval, ArtifactReview, DigestAlgorithm, GeneratedFile, InstallError,
-    InstallPlan, JavaRequirement, LaunchRecipe, Limits, MojangObject, PublishedDigest, ResolvedPreview,
-    Result,
-    Software,
-    SoftwareDescriptor, SourceFamily, Warning,
+    InstallPlan, JavaRequirement, LaunchRecipe, Limits, MojangObject, PublishedDigest,
+    ResolvedPreview, Result, Software, SoftwareDescriptor, SourceFamily, Warning,
 };
 pub use progress::{ProgressReporter, SilentProgressReporter};
 pub use providers::buildtools::{BuiltReceipt, SourceRefs};
-pub use providers::{Selection, releases::SoftwareRelease};
+pub use providers::{releases::SoftwareRelease, Selection};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,

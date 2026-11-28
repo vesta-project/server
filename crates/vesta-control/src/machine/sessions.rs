@@ -325,8 +325,11 @@ impl HostSessions {
         Ok(h.finalize().into())
     }
     pub fn authenticate(&self, token: &str) -> Result<Device> {
-        let b = self.bearers.get(&self.hash(token)?)
-            .filter(|b| b.deadline.live(self.state.now_ms())).ok_or(INVALID)?;
+        let b = self
+            .bearers
+            .get(&self.hash(token)?)
+            .filter(|b| b.deadline.live(self.state.now_ms()))
+            .ok_or(INVALID)?;
         let d = self
             .state
             .active_device(b.device)

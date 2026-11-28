@@ -39,7 +39,11 @@ fn ensure(c: &rusqlite::Connection) -> crate::Result<()> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS machine_invites(id TEXT PRIMARY KEY,server TEXT NOT NULL,role TEXT NOT NULL,payload_hash TEXT NOT NULL UNIQUE,created INTEGER NOT NULL,expires INTEGER NOT NULL,creator TEXT NOT NULL,max_uses INTEGER NOT NULL,uses INTEGER NOT NULL DEFAULT 0,revoked INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS machine_invite_receipts(invite TEXT NOT NULL,account TEXT NOT NULL,device TEXT NOT NULL,PRIMARY KEY(invite,device));")?;
     Ok(())
 }
-pub(super) fn fence_role_in(c: &rusqlite::Connection, server: Uuid, role: ServerRole) -> crate::Result<()> {
+pub(super) fn fence_role_in(
+    c: &rusqlite::Connection,
+    server: Uuid,
+    role: ServerRole,
+) -> crate::Result<()> {
     ensure(c)?;
     c.execute("UPDATE machine_invites SET revoked=1 WHERE server=?1 AND (role=?2 OR (role='player' AND ?2='pack-user'))",
         params![server.to_string(),role.as_str()])?;

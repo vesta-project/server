@@ -4,8 +4,8 @@ use super::{
 };
 use crate::progress::ProgressReporter;
 use serde::{
-    Deserialize, Deserializer,
     de::{MapAccess, SeqAccess, Visitor},
+    Deserialize, Deserializer,
 };
 use std::{
     collections::{BTreeMap, HashSet},

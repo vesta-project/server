@@ -470,14 +470,34 @@ mod tests {
     }
 }
 
-#[cfg(feature="test-support")]
+#[cfg(feature = "test-support")]
 impl MinecraftChallenges {
     /// Inert online-provider fixture, unavailable in production builds.
-    pub fn test_profile(server: ServerUuid, account: super::MinecraftUuid, name: super::MinecraftName) -> Self {
-        struct Fake(super::MinecraftUuid,super::MinecraftName);
+    pub fn test_profile(
+        server: ServerUuid,
+        account: super::MinecraftUuid,
+        name: super::MinecraftName,
+    ) -> Self {
+        struct Fake(super::MinecraftUuid, super::MinecraftName);
         impl SessionProvider for Fake {
-            fn verify(&self,_:&super::MinecraftName,_:&super::ServerHash)->Result<Option<super::provider::JoinedProfile>,MinecraftError>{Ok(Some(super::provider::JoinedProfile{uuid:self.0,name:self.1.clone()}))}
+            fn verify(
+                &self,
+                _: &super::MinecraftName,
+                _: &super::ServerHash,
+            ) -> Result<Option<super::provider::JoinedProfile>, MinecraftError> {
+                Ok(Some(super::provider::JoinedProfile {
+                    uuid: self.0,
+                    name: self.1.clone(),
+                }))
+            }
         }
-        Self {server,shared:Arc::new(Shared::new(Arc::new(Fake(account,name)),Arc::new(MonotonicClock),Limits::default()))}
+        Self {
+            server,
+            shared: Arc::new(Shared::new(
+                Arc::new(Fake(account, name)),
+                Arc::new(MonotonicClock),
+                Limits::default(),
+            )),
+        }
     }
 }

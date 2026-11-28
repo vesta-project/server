@@ -33,14 +33,29 @@ pub(crate) fn sync(
     }
     let mut devices = std::collections::HashSet::new();
     if policy.whitelist_owners.len() > 4096
-        || policy.whitelist_owners.iter().any(|(id, name)| id.is_nil() || !crate::moderation::valid_player(name))
+        || policy
+            .whitelist_owners
+            .iter()
+            .any(|(id, name)| id.is_nil() || !crate::moderation::valid_player(name))
     {
         return Err(ManagementError::InvalidRequest);
     }
     if policy.whitelist_roles.len() > 128
-        || policy.whitelist_roles.keys().any(|id| RoleId::parse(id).is_err())
-        || policy.whitelist_roles.values().map(|members| members.len()).sum::<usize>() > 4096
-        || policy.whitelist_roles.values().flat_map(|members| members.iter()).any(|(id, name)| id.is_nil() || !crate::moderation::valid_player(name))
+        || policy
+            .whitelist_roles
+            .keys()
+            .any(|id| RoleId::parse(id).is_err())
+        || policy
+            .whitelist_roles
+            .values()
+            .map(|members| members.len())
+            .sum::<usize>()
+            > 4096
+        || policy
+            .whitelist_roles
+            .values()
+            .flat_map(|members| members.iter())
+            .any(|(id, name)| id.is_nil() || !crate::moderation::valid_player(name))
         || policy.activity_identities.len() > policy.grants.len()
         || policy.activity_identities.values().any(|labels| {
             DisplayName::parse(&labels.display_name).is_err()
@@ -73,10 +88,12 @@ pub(crate) fn sync(
         if host != policy.host_id.to_string()
             || server != policy.server_id.to_string()
             || (policy.generation as i64) < generation
-            || policy.generation as i64 == generation && previous != document
-                && !serde_json::from_str::<WorkerPolicy>(&previous)
-                    .is_ok_and(|prior| prior.grants == policy.grants
-                        && prior.access_sources_accounts == policy.access_sources_accounts)
+            || policy.generation as i64 == generation
+                && previous != document
+                && !serde_json::from_str::<WorkerPolicy>(&previous).is_ok_and(|prior| {
+                    prior.grants == policy.grants
+                        && prior.access_sources_accounts == policy.access_sources_accounts
+                })
         {
             return Err(ManagementError::Forbidden);
         }
@@ -89,8 +106,12 @@ pub(crate) fn sync(
                     "INSERT INTO worker_activity_identities VALUES(?,?,?,?)
                      ON CONFLICT(account_id,device_id) DO UPDATE SET
                         display_name=excluded.display_name,device_name=excluded.device_name",
-                    params![grant.account_id.to_string(), grant.device_id.to_string(),
-                        labels.display_name, labels.device_name],
+                    params![
+                        grant.account_id.to_string(),
+                        grant.device_id.to_string(),
+                        labels.display_name,
+                        labels.device_name
+                    ],
                 )?;
             }
         }
@@ -123,16 +144,21 @@ pub(crate) fn whitelist_sync_owner(c: &Connection) -> vesta_state::Result<Option
     let Some(document) = policy_document(c)? else {
         return Ok(None);
     };
-    Ok(serde_json::from_str::<WorkerPolicy>(&document).ok().and_then(|policy| {
-        let grant = policy.grants.iter().find(|grant| {
-            grant.role == crate::worker::ServerRole::Owner
-                && grant.capabilities.iter().any(|cap| cap == Capability::PlayersModerate.id())
-        })?;
-        Some(Subject {
-            principal: PrincipalId::parse(&grant.account_id.to_string()).ok()?,
-            device: DeviceId::parse(&grant.device_id.to_string()).ok()?,
-        })
-    }))
+    Ok(serde_json::from_str::<WorkerPolicy>(&document)
+        .ok()
+        .and_then(|policy| {
+            let grant = policy.grants.iter().find(|grant| {
+                grant.role == crate::worker::ServerRole::Owner
+                    && grant
+                        .capabilities
+                        .iter()
+                        .any(|cap| cap == Capability::PlayersModerate.id())
+            })?;
+            Some(Subject {
+                principal: PrincipalId::parse(&grant.account_id.to_string()).ok()?,
+                device: DeviceId::parse(&grant.device_id.to_string()).ok()?,
+            })
+        }))
 }
 
 pub(crate) fn whitelist_roles(
@@ -144,7 +170,9 @@ pub(crate) fn whitelist_roles(
     let policy: WorkerPolicy = serde_json::from_str(&document)
         .map_err(|_| vesta_state::StateError::new("worker_policy_unavailable"))?;
     let mut roles = policy.whitelist_roles;
-    roles.entry("owner".into()).or_insert(policy.whitelist_owners);
+    roles
+        .entry("owner".into())
+        .or_insert(policy.whitelist_owners);
     // Older snapshots did not enumerate valid role IDs.
     for role in crate::machine::owners::ServerRole::ALL {
         roles.entry(role.id().into()).or_default();
@@ -154,20 +182,29 @@ pub(crate) fn whitelist_roles(
 /// Old removals could persist an empty policy one generation ahead of the
 /// Host before committing the deletion. A new worker for a registered server
 /// with a pending receipt waits for the current Host policy after this reset.
-pub(crate) fn recover_removal_fence(db: &StateDatabase, generation: u64) -> vesta_state::Result<()> {
+pub(crate) fn recover_removal_fence(
+    db: &StateDatabase,
+    generation: u64,
+) -> vesta_state::Result<()> {
     let Ok(fence) = i64::try_from(generation.saturating_add(1)) else {
         return Ok(());
     };
     db.write(|c| {
-        let document: Option<String> = c.query_row(
-            "SELECT document FROM worker_policy WHERE singleton=1 AND generation=?",
-            [fence],
-            |row| row.get(0),
-        ).optional()?;
-        if document.and_then(|value| serde_json::from_str::<WorkerPolicy>(&value).ok())
+        let document: Option<String> = c
+            .query_row(
+                "SELECT document FROM worker_policy WHERE singleton=1 AND generation=?",
+                [fence],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if document
+            .and_then(|value| serde_json::from_str::<WorkerPolicy>(&value).ok())
             .is_some_and(|policy| policy.grants.is_empty() && policy.whitelist_owners.is_empty())
         {
-            c.execute("UPDATE worker_policy SET generation=0,document='' WHERE singleton=1", [])?;
+            c.execute(
+                "UPDATE worker_policy SET generation=0,document='' WHERE singleton=1",
+                [],
+            )?;
         }
         Ok(())
     })
@@ -239,7 +276,9 @@ pub(crate) fn resolve(
     };
     let access_sources = matches!(grant.role, crate::worker::ServerRole::Owner)
         || policy.access_sources_accounts.contains(&grant.account_id);
-    let allows = grant.capabilities.iter()
+    let allows = grant
+        .capabilities
+        .iter()
         .filter_map(|id| Capability::from_id(id))
         .filter(|&cap| {
             if cap == Capability::AccessSourcesManage {
@@ -275,7 +314,8 @@ mod tests {
         let db = StateDatabase::open(
             vesta_state::StateDirectory::new(tmp.path().join("worker"), None).unwrap(),
             Arc::new(vesta_state::SystemClock),
-        ).unwrap();
+        )
+        .unwrap();
         let mut policy = WorkerPolicy {
             host_id: Uuid::new_v4(),
             server_id: Uuid::new_v4(),
@@ -288,7 +328,16 @@ mod tests {
         };
         initialize(&db, policy.host_id, policy.server_id).unwrap();
         sync(&db, &policy).unwrap();
-        let generation = || db.read(|c| Ok(c.query_row("SELECT generation FROM worker_policy", [], |row| row.get::<_, i64>(0))?)).unwrap();
+        let generation = || {
+            db.read(|c| {
+                Ok(
+                    c.query_row("SELECT generation FROM worker_policy", [], |row| {
+                        row.get::<_, i64>(0)
+                    })?,
+                )
+            })
+            .unwrap()
+        };
         recover_removal_fence(&db, 2).unwrap();
         assert_eq!(generation(), 4);
         recover_removal_fence(&db, 3).unwrap();

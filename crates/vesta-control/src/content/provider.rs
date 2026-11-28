@@ -439,26 +439,53 @@ impl UreqProviderClient {
             return serde_json::from_slice(&bytes).map_err(|_| ContentError::InvalidMetadata);
         }
         // Idempotent GET retries share a single metadata budget.
-        let deadline = self.deadline.unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(60));
+        let deadline = self
+            .deadline
+            .unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(60));
         let mut bytes = None;
         for attempt in 0..3 {
             super::deadline_check(deadline)?;
-            let mut request = self.agent.get(url)
-                .header("Accept", "application/json").header("Accept-Encoding", "identity")
+            let mut request = self
+                .agent
+                .get(url)
+                .header("Accept", "application/json")
+                .header("Accept-Encoding", "identity")
                 .header("User-Agent", "vesta-control/content-installer")
-                .config().timeout_global(Some(deadline.saturating_duration_since(Instant::now()))).build();
-            if let Some(key) = key { request = request.header("x-api-key", key); }
-            #[cfg(test)] self.count_request(false);
-            match request.call() {
-                Ok(response) if response.status().is_success() => match self.read_metadata(response) {
-                    Ok(body) => { bytes = Some(body); break; },
-                    Err(ContentError::DownloadFailed) => {}, Err(e) => return Err(e),
-                },
-                Ok(response) if response.status().as_u16() == 429 || response.status().is_server_error() => {},
-                Ok(response) => { return self.read_metadata(response).and_then(|body| serde_json::from_slice(&body).map_err(|_| ContentError::InvalidMetadata)); },
-                Err(_) => {},
+                .config()
+                .timeout_global(Some(deadline.saturating_duration_since(Instant::now())))
+                .build();
+            if let Some(key) = key {
+                request = request.header("x-api-key", key);
             }
-            if attempt < 2 { std::thread::sleep(std::time::Duration::from_millis(250 << attempt).min(deadline.saturating_duration_since(Instant::now()))); }
+            #[cfg(test)]
+            self.count_request(false);
+            match request.call() {
+                Ok(response) if response.status().is_success() => {
+                    match self.read_metadata(response) {
+                        Ok(body) => {
+                            bytes = Some(body);
+                            break;
+                        }
+                        Err(ContentError::DownloadFailed) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(response)
+                    if response.status().as_u16() == 429 || response.status().is_server_error() => {
+                }
+                Ok(response) => {
+                    return self.read_metadata(response).and_then(|body| {
+                        serde_json::from_slice(&body).map_err(|_| ContentError::InvalidMetadata)
+                    });
+                }
+                Err(_) => {}
+            }
+            if attempt < 2 {
+                std::thread::sleep(
+                    std::time::Duration::from_millis(250 << attempt)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
         }
         let bytes = bytes.ok_or(ContentError::DownloadFailed)?;
         let value = serde_json::from_slice(&bytes).map_err(|_| ContentError::InvalidMetadata)?;
@@ -1048,20 +1075,44 @@ mod timeout_regressions {
     use super::*;
     #[test]
     fn metadata_get_retries_transient_failure_and_allows_a_slow_body() {
-        use std::{io::{Read, Write},net::TcpListener,time::Duration};
-        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
-        let url=format!("http://{}/metadata",listener.local_addr().unwrap());
-        let server=std::thread::spawn(move || {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+            time::Duration,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/metadata", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
             for attempt in 0..2 {
-                let (mut socket,_)=listener.accept().unwrap();
-                let mut request=[0;4096]; let _=socket.read(&mut request).unwrap();
-                if attempt==0 { socket.write_all(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap(); }
-                else { socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n").unwrap(); socket.flush().unwrap(); std::thread::sleep(Duration::from_secs(11)); socket.write_all(b"{}").unwrap(); }
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let _ = socket.read(&mut request).unwrap();
+                if attempt == 0 {
+                    socket.write_all(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                } else {
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                    socket.flush().unwrap();
+                    std::thread::sleep(Duration::from_secs(11));
+                    socket.write_all(b"{}").unwrap();
+                }
             }
         });
-        let mut client=UreqProviderClient::new(None);
-        client.agent=ureq::Agent::config_builder().https_only(false).http_status_as_error(false).timeout_connect(Some(Duration::from_secs(3))).timeout_recv_body(Some(Duration::from_secs(120))).build().into();
-        assert_eq!(client.metadata::<serde_json::Value>(&url,None).unwrap(),serde_json::json!({}));
+        let mut client = UreqProviderClient::new(None);
+        client.agent = ureq::Agent::config_builder()
+            .https_only(false)
+            .http_status_as_error(false)
+            .timeout_connect(Some(Duration::from_secs(3)))
+            .timeout_recv_body(Some(Duration::from_secs(120)))
+            .build()
+            .into();
+        assert_eq!(
+            client.metadata::<serde_json::Value>(&url, None).unwrap(),
+            serde_json::json!({})
+        );
         server.join().unwrap();
     }
 }

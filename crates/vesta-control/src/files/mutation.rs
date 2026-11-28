@@ -834,12 +834,18 @@ impl FileBrowser {
         trash: &ArtifactDirectory,
         name: &ArtifactName,
     ) -> Result<()> {
-        let directory = self.db.read(|c| Ok(c.query_row(
-            "SELECT directory FROM file_trash WHERE server_id=? AND id=?",
-            params![self.db.server_id(), id], |row| row.get::<_, bool>(0),
-        ).optional()?.unwrap_or(false)))?;
+        let directory = self.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT directory FROM file_trash WHERE server_id=? AND id=?",
+                params![self.db.server_id(), id],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+        })?;
         if directory {
-            self.db.read_with(|tx| self.remove_directory_copy(tx.connection(), id))
+            self.db
+                .read_with(|tx| self.remove_directory_copy(tx.connection(), id))
                 .map_err(FileError::from)?;
         } else {
             trash.remove(name).map_err(state_io)?;
@@ -1489,18 +1495,20 @@ fn load_entry(connection: &Connection, server: &str, id: &str) -> Result<Option<
             },
         )
         .optional()?;
-    row.map(|(path, sha256, size, trashed_at, expires_at, directory, batch_id)| {
-        Ok(TrashEntry {
-            id: id.to_owned(),
-            path: RelativePath::parse(&path).map_err(|_| FileError::Unavailable)?,
-            sha256,
-            size: u64::try_from(size).map_err(|_| FileError::Unavailable)?,
-            trashed_at,
-            expires_at,
-            directory,
-            batch_id,
-        })
-    })
+    row.map(
+        |(path, sha256, size, trashed_at, expires_at, directory, batch_id)| {
+            Ok(TrashEntry {
+                id: id.to_owned(),
+                path: RelativePath::parse(&path).map_err(|_| FileError::Unavailable)?,
+                sha256,
+                size: u64::try_from(size).map_err(|_| FileError::Unavailable)?,
+                trashed_at,
+                expires_at,
+                directory,
+                batch_id,
+            })
+        },
+    )
     .transpose()
 }
 

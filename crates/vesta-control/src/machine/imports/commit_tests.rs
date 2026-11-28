@@ -238,23 +238,26 @@ fn launch_paths_avoid_windows_verbatim_spelling_java_cannot_load() {
     );
 }
 
-
 #[test]
 fn startup_waits_for_the_setup_receipt_even_after_registration() {
     let f = Fixture::new();
     let id = Uuid::new_v4();
-    f.jobs.write(|c| {
-        c.execute(
-            "INSERT INTO machine_import_jobs(job_id,account_id,device_id,state,phase,request,
+    f.jobs
+        .write(|c| {
+            c.execute(
+                "INSERT INTO machine_import_jobs(job_id,account_id,device_id,state,phase,request,
                 server_id,created_ms,updated_ms) VALUES('fixture','account','device','interrupted',
                 'registering','{}',?,0,0)",
-            [id.to_string()],
-        )?;
-        Ok(())
-    }).unwrap();
+                [id.to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     assert!(!f.jobs.setup_completed(id).unwrap());
     f.jobs.set_phase("fixture", "ready", "registering").unwrap();
     assert!(f.jobs.setup_completed(id).unwrap());
-    f.jobs.set_phase("fixture", "interrupted", "starting").unwrap();
+    f.jobs
+        .set_phase("fixture", "interrupted", "starting")
+        .unwrap();
     assert!(f.jobs.setup_completed(id).unwrap());
 }

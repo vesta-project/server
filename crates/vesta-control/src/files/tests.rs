@@ -203,7 +203,14 @@ fn content_identification_records_matches_for_unknown_resource_files() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     };
-    assert_eq!(paths, ["mods/renamed.jar", "plugins/renamed.jar.disabled", "resourcepacks/renamed.zip"]);
+    assert_eq!(
+        paths,
+        [
+            "mods/renamed.jar",
+            "plugins/renamed.jar.disabled",
+            "resourcepacks/renamed.zip"
+        ]
+    );
     let after = inventory();
     assert_eq!(
         after

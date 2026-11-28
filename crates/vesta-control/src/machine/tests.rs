@@ -699,13 +699,52 @@ fn removed_servers_revoke_grants_replay_restore_and_expire() {
     };
     let (record, done) = removed::prepare(&state, owner, server.server_id, &req, None).unwrap();
     assert!(!done);
-    let mut renamed=server.clone();renamed.name="Renamed".into();
-    state.update_server(Actor::Account(owner),&renamed,state.snapshot().unwrap().revision).unwrap();
-    assert_eq!(removed::prepare(&state,owner,server.server_id,&req, None).err().unwrap().0,"confirm_name_mismatch");
-    state.update_server(Actor::Account(owner),&server,state.snapshot().unwrap().revision).unwrap();
-    state.write(|c| {c.execute_batch("CREATE TABLE machine_import_jobs(server_id TEXT,state TEXT)")?;c.execute("INSERT INTO machine_import_jobs VALUES(?,'applying')",[server.server_id.to_string()])?;Ok(())}).unwrap();
-    assert_eq!(removed::prepare(&state,owner,server.server_id,&req, None).err().unwrap().0,"server_busy");
-    state.write(|c| {c.execute("DELETE FROM machine_import_jobs",[])?;Ok(())}).unwrap();
+    let mut renamed = server.clone();
+    renamed.name = "Renamed".into();
+    state
+        .update_server(
+            Actor::Account(owner),
+            &renamed,
+            state.snapshot().unwrap().revision,
+        )
+        .unwrap();
+    assert_eq!(
+        removed::prepare(&state, owner, server.server_id, &req, None)
+            .err()
+            .unwrap()
+            .0,
+        "confirm_name_mismatch"
+    );
+    state
+        .update_server(
+            Actor::Account(owner),
+            &server,
+            state.snapshot().unwrap().revision,
+        )
+        .unwrap();
+    state
+        .write(|c| {
+            c.execute_batch("CREATE TABLE machine_import_jobs(server_id TEXT,state TEXT)")?;
+            c.execute(
+                "INSERT INTO machine_import_jobs VALUES(?,'applying')",
+                [server.server_id.to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        removed::prepare(&state, owner, server.server_id, &req, None)
+            .err()
+            .unwrap()
+            .0,
+        "server_busy"
+    );
+    state
+        .write(|c| {
+            c.execute("DELETE FROM machine_import_jobs", [])?;
+            Ok(())
+        })
+        .unwrap();
     removed::finish(&state, &servers, &record, &req).unwrap();
     assert!(state.visible_servers(owner).unwrap().is_empty());
     assert!(
@@ -762,7 +801,11 @@ fn removed_server_restart_reconciles_moves_and_resumes_permanent_purge() {
     };
     let (record, _) = removed::prepare(&state, owner, server.server_id, &request, None).unwrap();
     let staged = record.path(&removed_root);
-    std::fs::write(source.join("removed.json"), serde_json::to_vec(&record).unwrap()).unwrap();
+    std::fs::write(
+        source.join("removed.json"),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
     std::fs::rename(&source, &staged).unwrap();
 
     // An interruption between the move and the registry commit is reversible.
@@ -780,10 +823,20 @@ fn removed_server_restart_reconciles_moves_and_resumes_permanent_purge() {
     removed::purge_expired(&state, &servers, state.now_ms()).unwrap();
     assert!(!source.exists());
     assert!(!staged.exists());
-    let retained = temp.path().join("retained-backups").join(server.server_id.to_string());
+    let retained = temp
+        .path()
+        .join("retained-backups")
+        .join(server.server_id.to_string());
     assert_eq!(std::fs::read(retained.join("point")).unwrap(), b"retained");
-    assert_eq!(state.server(server.server_id).unwrap().unwrap().state, ServerState::Deleted);
-    assert!(removed::prepare(&state, owner, server.server_id, &request, None).unwrap().1);
+    assert_eq!(
+        state.server(server.server_id).unwrap().unwrap().state,
+        ServerState::Deleted
+    );
+    assert!(
+        removed::prepare(&state, owner, server.server_id, &request, None)
+            .unwrap()
+            .1
+    );
 }
 
 #[test]

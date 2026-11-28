@@ -1018,7 +1018,6 @@ fn remote_repository_initialization_refuses_a_junction_before_writing() {
     assert_eq!(backups.policy().revision, None);
 }
 
-
 #[test]
 fn per_profile_byte_limits_keep_the_last_success_and_surface_usage() {
     let mut f = fixture();
@@ -1028,23 +1027,34 @@ fn per_profile_byte_limits_keep_the_last_success_and_surface_usage() {
     assert_eq!(backup_error(&backups, "stopped"), None);
     let first = backups.snapshots("stopped").unwrap().pop().unwrap().id;
     let status = backups.storage().unwrap();
-    let usage = status.profiles.iter().find(|p| p.name == "stopped").unwrap().collection_bytes;
+    let usage = status
+        .profiles
+        .iter()
+        .find(|p| p.name == "stopped")
+        .unwrap()
+        .collection_bytes;
     assert!(usage > 1);
-    let mut policy = PolicyDocument::from_policy(&backups.policy().profiles, &backups.policy().limits);
+    let mut policy =
+        PolicyDocument::from_policy(&backups.policy().profiles, &backups.policy().limits);
     policy.profiles[0].max_snapshot_bytes = Some(1);
     let saved = backups.set_policy(&owner(), None, &policy).unwrap();
-    assert_eq!(backup_error(&backups, "stopped").as_deref(), Some(vesta_control::backups::SNAPSHOT_SIZE_LIMIT));
+    assert_eq!(
+        backup_error(&backups, "stopped").as_deref(),
+        Some(vesta_control::backups::SNAPSHOT_SIZE_LIMIT)
+    );
     assert_eq!(backups.snapshots("stopped").unwrap()[0].id, first);
     policy.profiles[0].max_snapshot_bytes = None;
     policy.profiles[0].max_collection_bytes = Some(1);
     backups.set_policy(&owner(), Some(saved), &policy).unwrap();
-    assert_eq!(backup_error(&backups, "stopped").as_deref(), Some(vesta_control::backups::COLLECTION_SIZE_LIMIT));
+    assert_eq!(
+        backup_error(&backups, "stopped").as_deref(),
+        Some(vesta_control::backups::COLLECTION_SIZE_LIMIT)
+    );
     assert_eq!(backups.snapshots("stopped").unwrap()[0].id, first);
     let status = backups.storage().unwrap();
     assert_eq!(status.profiles[0].max_collection_bytes, Some(1));
     assert_eq!(status.profiles[0].collection_bytes, usage);
 }
-
 
 #[test]
 fn per_profile_collection_cap_prunes_oldest_unkept_snapshot() {
@@ -1052,12 +1062,14 @@ fn per_profile_collection_cap_prunes_oldest_unkept_snapshot() {
     f.settings.profiles[0].keep_last = 0;
     let write_world = |seed: u32| {
         let mut state = seed;
-        let bytes = (0..32768).map(|_| {
-            state ^= state << 13;
-            state ^= state >> 17;
-            state ^= state << 5;
-            state as u8
-        }).collect::<Vec<_>>();
+        let bytes = (0..32768)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect::<Vec<_>>();
         fs::write(f.game.join("world/region.mca"), bytes).unwrap();
     };
     write_world(1);
@@ -1066,7 +1078,8 @@ fn per_profile_collection_cap_prunes_oldest_unkept_snapshot() {
     assert_eq!(backup_error(&backups, "stopped"), None);
     let oldest = backups.snapshots("stopped").unwrap()[0].id.clone();
     let max = backups.storage().unwrap().profiles[0].collection_bytes + 4096;
-    let mut policy = PolicyDocument::from_policy(&backups.policy().profiles, &backups.policy().limits);
+    let mut policy =
+        PolicyDocument::from_policy(&backups.policy().profiles, &backups.policy().limits);
     policy.profiles[0].max_collection_bytes = Some(max);
     backups.set_policy(&owner(), None, &policy).unwrap();
     write_world(2);
@@ -1114,7 +1127,10 @@ fn req_oversized_backup_fails_and_emits_a_failure_event() {
     assert!(backups.snapshots("stopped").unwrap().is_empty());
     assert_eq!(
         failure_events(&f),
-        vec![("stopped".to_owned(), vesta_control::backups::SNAPSHOT_SIZE_LIMIT.to_owned())]
+        vec![(
+            "stopped".to_owned(),
+            vesta_control::backups::SNAPSHOT_SIZE_LIMIT.to_owned()
+        )]
     );
 }
 
@@ -1137,13 +1153,23 @@ fn req_failure_workflow_backups_do_not_retrigger_failure_events() {
     let (backups, _, _) = open(&f, false);
     backups.init_repository().unwrap();
     let id = backups
-        .submit(&owner(), "stopped", JobKind::Backup, Some("automation-failure.run.0.0"))
+        .submit(
+            &owner(),
+            "stopped",
+            JobKind::Backup,
+            Some("automation-failure.run.0.0"),
+        )
         .unwrap();
     assert!(wait(&backups, &id).error_code.is_some());
     assert!(failure_events(&f).is_empty());
     // An ordinary automation backup still reports its failure.
     let id = backups
-        .submit(&owner(), "stopped", JobKind::Backup, Some("automation.run.0.0"))
+        .submit(
+            &owner(),
+            "stopped",
+            JobKind::Backup,
+            Some("automation.run.0.0"),
+        )
         .unwrap();
     assert!(wait(&backups, &id).error_code.is_some());
     assert_eq!(failure_events(&f).len(), 1);
@@ -1182,7 +1208,8 @@ fn req_profile_byte_limits_must_be_positive() {
     let f = fixture();
     let (backups, _, _) = open(&f, false);
     backups.init_repository().unwrap();
-    let mut policy = PolicyDocument::from_policy(&backups.policy().profiles, &backups.policy().limits);
+    let mut policy =
+        PolicyDocument::from_policy(&backups.policy().profiles, &backups.policy().limits);
     policy.profiles[0].max_snapshot_bytes = Some(0);
     assert!(backups.set_policy(&owner(), None, &policy).is_err());
     policy.profiles[0].max_snapshot_bytes = None;

@@ -149,9 +149,17 @@ impl FileBrowser {
         change: &crate::operations::WhitelistSyncChange,
         expected_sha256: Option<String>,
     ) -> Result<Value> {
-        let patch = OfflineWhitelistPatch { player: change.name.clone(), add: change.add, expected_sha256 };
+        let patch = OfflineWhitelistPatch {
+            player: change.name.clone(),
+            add: change.add,
+            expected_sha256,
+        };
         self.patch_whitelist(
-            runtime, subject, &format!("whitelist-sync:{}", uuid::Uuid::new_v4()), patch, Some(change),
+            runtime,
+            subject,
+            &format!("whitelist-sync:{}", uuid::Uuid::new_v4()),
+            patch,
+            Some(change),
         )
     }
 
@@ -219,7 +227,9 @@ impl FileBrowser {
             if !online {
                 return Err(FileError::Conflict(None));
             }
-            change.add.then(|| (change.name.clone(), change.uuid.clone()))
+            change
+                .add
+                .then(|| (change.name.clone(), change.uuid.clone()))
         } else if patch.add {
             Some(resolve_bounded(
                 &patch.player,

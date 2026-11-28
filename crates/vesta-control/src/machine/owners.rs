@@ -42,7 +42,13 @@ pub enum ServerRole {
     Admin,
 }
 impl ServerRole {
-    pub const ALL: &[Self] = &[Self::Admin, Self::Maintainer, Self::Moderator, Self::Viewer, Self::PackUser];
+    pub const ALL: &[Self] = &[
+        Self::Admin,
+        Self::Maintainer,
+        Self::Moderator,
+        Self::Viewer,
+        Self::PackUser,
+    ];
 
     pub const fn builtin(self) -> BuiltinRole {
         match self {
@@ -133,7 +139,9 @@ impl EffectiveRole {
 
     pub fn permits(self, capability: Capability) -> bool {
         match self {
-            Self::Owner | Self::PrimaryOwner => BuiltinRole::Owner.capabilities().contains(&capability),
+            Self::Owner | Self::PrimaryOwner => {
+                BuiltinRole::Owner.capabilities().contains(&capability)
+            }
             Self::Server(role) => role.permits(capability),
             Self::Custom { .. } | Self::EditedBuiltin { .. } => false,
         }
@@ -142,7 +150,10 @@ impl EffectiveRole {
     pub fn can_invite(self, role: ServerRole) -> bool {
         self.permits(Capability::InvitationsCreate)
             && crate::identity::can_delegate_role(self.rank(), role.rank(), Some(role.builtin()))
-            && role.capabilities().iter().all(|&cap| cap.delegable() && self.permits(cap))
+            && role
+                .capabilities()
+                .iter()
+                .all(|&cap| cap.delegable() && self.permits(cap))
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -466,20 +477,50 @@ impl HostState {
         revision: u64,
     ) -> Result<HostSnapshot> {
         self.write(|c| {
-            expect_revision(c,revision)?;
-            super::registry::require_server(c,server)?;
-            let authorized=match actor { Actor::LocalRecovery=>true,Actor::Account(id)=> host_role_in(c,id)?.is_some() || super::registry::effective_role_in(c,id,server)?==Some(EffectiveRole::Server(ServerRole::Admin)) };
-            if !authorized { return Err(reject(Code::Forbidden)); }
-            if !account_exists(c,target)? { return Err(reject(Code::NotFound)); }
-            // Machine ownership cannot be changed through server access, even by owners.
-            if host_role_in(c,target)?.is_some() { return Err(reject(Code::Forbidden)); }
-            let owner = match actor { Actor::LocalRecovery => true, Actor::Account(id) => host_role_in(c,id)?.is_some() };
-            if !owner && (role == Some(ServerRole::Admin) || super::registry::effective_role_in(c,target,server)? == Some(EffectiveRole::Server(ServerRole::Admin))) {
+            expect_revision(c, revision)?;
+            super::registry::require_server(c, server)?;
+            let authorized = match actor {
+                Actor::LocalRecovery => true,
+                Actor::Account(id) => {
+                    host_role_in(c, id)?.is_some()
+                        || super::registry::effective_role_in(c, id, server)?
+                            == Some(EffectiveRole::Server(ServerRole::Admin))
+                }
+            };
+            if !authorized {
                 return Err(reject(Code::Forbidden));
             }
-            if let Some(role)=role { super::roles::store_assignment(c,server,target,role.as_str())?; }
-            else { super::default_access::exclude_in(c,server,target)?; }
-            changed(c,true,"server_role_change",&actor.audit(),&format!("{server}/{target}"),self.now_ms())
+            if !account_exists(c, target)? {
+                return Err(reject(Code::NotFound));
+            }
+            // Machine ownership cannot be changed through server access, even by owners.
+            if host_role_in(c, target)?.is_some() {
+                return Err(reject(Code::Forbidden));
+            }
+            let owner = match actor {
+                Actor::LocalRecovery => true,
+                Actor::Account(id) => host_role_in(c, id)?.is_some(),
+            };
+            if !owner
+                && (role == Some(ServerRole::Admin)
+                    || super::registry::effective_role_in(c, target, server)?
+                        == Some(EffectiveRole::Server(ServerRole::Admin)))
+            {
+                return Err(reject(Code::Forbidden));
+            }
+            if let Some(role) = role {
+                super::roles::store_assignment(c, server, target, role.as_str())?;
+            } else {
+                super::default_access::exclude_in(c, server, target)?;
+            }
+            changed(
+                c,
+                true,
+                "server_role_change",
+                &actor.audit(),
+                &format!("{server}/{target}"),
+                self.now_ms(),
+            )
         })
     }
 }

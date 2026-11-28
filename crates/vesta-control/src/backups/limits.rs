@@ -18,7 +18,13 @@ pub const STORAGE_LIMIT: &str = "backup_storage_limit_reached";
 pub const DISK_SPACE_LOW: &str = "backup_disk_space_low";
 pub const SNAPSHOT_SIZE_LIMIT: &str = "backup_snapshot_size_limit_reached";
 pub const COLLECTION_SIZE_LIMIT: &str = "backup_collection_limit_reached";
-const LIMIT_CODES: [&str; 5] = [SNAPSHOT_LIMIT, SNAPSHOT_SIZE_LIMIT, COLLECTION_SIZE_LIMIT, STORAGE_LIMIT, DISK_SPACE_LOW];
+const LIMIT_CODES: [&str; 5] = [
+    SNAPSHOT_LIMIT,
+    SNAPSHOT_SIZE_LIMIT,
+    COLLECTION_SIZE_LIMIT,
+    STORAGE_LIMIT,
+    DISK_SPACE_LOW,
+];
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct ProfileStorage {
@@ -171,12 +177,21 @@ impl Backups {
                 .flatten()
                 .filter(|code| LIMIT_CODES.contains(&code.as_str()))
         });
-        let tags = profiles.iter().map(|p| profile_tag(&p.name)).collect::<Vec<_>>();
+        let tags = profiles
+            .iter()
+            .map(|p| profile_tag(&p.name))
+            .collect::<Vec<_>>();
         let usage = inner.engine.collection_usage(&tags).map_err(unavailable)?;
-        let profiles = profiles.iter().zip(tags).map(|(profile, tag)| ProfileStorage {
-            name: profile.name.clone(), collection_bytes: usage.get(&tag).copied().unwrap_or_default(),
-            max_snapshot_bytes: profile.max_snapshot_bytes, max_collection_bytes: profile.max_collection_bytes,
-        }).collect();
+        let profiles = profiles
+            .iter()
+            .zip(tags)
+            .map(|(profile, tag)| ProfileStorage {
+                name: profile.name.clone(),
+                collection_bytes: usage.get(&tag).copied().unwrap_or_default(),
+                max_snapshot_bytes: profile.max_snapshot_bytes,
+                max_collection_bytes: profile.max_collection_bytes,
+            })
+            .collect();
         Ok(StorageStatus {
             repository_bytes,
             profiles,

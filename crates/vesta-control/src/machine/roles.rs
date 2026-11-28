@@ -108,26 +108,56 @@ fn custom_role(c: &Connection, server: Uuid, id: &str) -> Result<CustomRole> {
 }
 
 fn shipped(role: ServerRole) -> CustomRole {
-    from_capabilities(role.name(), role.rank(), role.capabilities().iter().copied().filter(|cap| !cap.host_scoped()))
+    from_capabilities(
+        role.name(),
+        role.rank(),
+        role.capabilities()
+            .iter()
+            .copied()
+            .filter(|cap| !cap.host_scoped()),
+    )
 }
 
-fn from_capabilities(name: &str, rank: i32, caps: impl IntoIterator<Item = Capability>) -> CustomRole {
-    CustomRole { name: name.into(), rank, capabilities: caps.into_iter().map(|cap| Grant {
-        capability:cap.id().into(), scope:"*".into(),
-    }).collect() }
+fn from_capabilities(
+    name: &str,
+    rank: i32,
+    caps: impl IntoIterator<Item = Capability>,
+) -> CustomRole {
+    CustomRole {
+        name: name.into(),
+        rank,
+        capabilities: caps
+            .into_iter()
+            .map(|cap| Grant {
+                capability: cap.id().into(),
+                scope: "*".into(),
+            })
+            .collect(),
+    }
 }
 
 pub(super) fn role_definition(c: &Connection, server: Uuid, id: &str) -> Result<CustomRole> {
     require_server(c, server)?;
     if id == "owner" {
         let owner = crate::identity::BuiltinRole::Owner;
-        return Ok(from_capabilities(owner.name(), owner.rank(), owner.capabilities().iter().copied()
-            .filter(|cap| !cap.host_scoped()).chain([Capability::LifecycleEnable])));
+        return Ok(from_capabilities(
+            owner.name(),
+            owner.rank(),
+            owner
+                .capabilities()
+                .iter()
+                .copied()
+                .filter(|cap| !cap.host_scoped())
+                .chain([Capability::LifecycleEnable]),
+        ));
     }
     if let Ok(role) = ServerRole::parse(id) {
         let mut definition = role_record(c, server, role.id())?.unwrap_or_else(|| shipped(role));
         if role == ServerRole::Admin {
-            definition.capabilities.push(Grant { capability: Capability::LifecycleEnable.id().into(), scope: "*".into() });
+            definition.capabilities.push(Grant {
+                capability: Capability::LifecycleEnable.id().into(),
+                scope: "*".into(),
+            });
         }
         return Ok(definition);
     }
@@ -138,7 +168,10 @@ pub(super) fn role_definition(c: &Connection, server: Uuid, id: &str) -> Result<
 pub(super) fn role_summary(c: &Connection, server: Uuid, id: &str) -> Result<Value> {
     let definition = role_definition(c, server, id)?;
     let builtin = ServerRole::parse(id).ok();
-    let id = match builtin { Some(role) => role.id(), None => id };
+    let id = match builtin {
+        Some(role) => role.id(),
+        None => id,
+    };
     let mut value = definition.summary(id);
     value["builtin"] = json!(builtin.is_some() || id == "owner");
     value["editable"] = json!(id != "owner" && builtin != Some(ServerRole::Admin));
@@ -157,20 +190,33 @@ pub(super) fn prepare_role(fields: RoleFields, prior: Option<CustomRole>) -> Res
     prepare_fields(fields, prior, false)
 }
 
-pub(super) fn prepare_fields(fields: RoleFields, prior: Option<CustomRole>, retain_reserved: bool) -> Result<CustomRole> {
+pub(super) fn prepare_fields(
+    fields: RoleFields,
+    prior: Option<CustomRole>,
+    retain_reserved: bool,
+) -> Result<CustomRole> {
     let invalid = || reject(Code::InvalidRequest);
-    let name = fields.name.or_else(|| prior.as_ref().map(|r| r.name.clone())).ok_or_else(invalid)?;
+    let name = fields
+        .name
+        .or_else(|| prior.as_ref().map(|r| r.name.clone()))
+        .ok_or_else(invalid)?;
     let name = name.trim();
     if name.is_empty() || name.len() > 96 || name.chars().any(char::is_control) {
         return Err(invalid());
     }
     let rank_changed = fields.rank.is_some();
-    let rank = fields.rank.or_else(|| prior.as_ref().map(|r| r.rank)).ok_or_else(invalid)?;
+    let rank = fields
+        .rank
+        .or_else(|| prior.as_ref().map(|r| r.rank))
+        .ok_or_else(invalid)?;
     if (rank_changed || !retain_reserved) && !(1..ServerRole::Admin.rank()).contains(&rank) {
         return Err(invalid());
     }
     let capabilities_changed = fields.capabilities.is_some();
-    let capabilities = fields.capabilities.or_else(|| prior.map(|r| r.capabilities)).ok_or_else(invalid)?;
+    let capabilities = fields
+        .capabilities
+        .or_else(|| prior.map(|r| r.capabilities))
+        .ok_or_else(invalid)?;
     if capabilities_changed || !retain_reserved {
         let mut caps = BTreeSet::new();
         for grant in &capabilities {
@@ -179,7 +225,11 @@ pub(super) fn prepare_fields(fields: RoleFields, prior: Option<CustomRole>, reta
             }
         }
     }
-    Ok(CustomRole { name: name.into(), rank, capabilities })
+    Ok(CustomRole {
+        name: name.into(),
+        rank,
+        capabilities,
+    })
 }
 
 pub(super) fn save_role(c: &Connection, server: Uuid, id: &str, role: &CustomRole) -> Result<()> {
@@ -189,14 +239,19 @@ pub(super) fn save_role(c: &Connection, server: Uuid, id: &str, role: &CustomRol
 }
 
 pub(super) fn check_role_edit(
-    c: &Connection, actor: Actor, server: Uuid, id: &str,
-    prior: Option<&CustomRole>, next: &CustomRole,
+    c: &Connection,
+    actor: Actor,
+    server: Uuid,
+    id: &str,
+    prior: Option<&CustomRole>,
+    next: &CustomRole,
 ) -> Result<()> {
     let auth = authority(c, actor, server)?;
     if let Some(prior) = prior {
         auth.require_role_edit()?;
         auth.delegate(prior.rank, prior.capabilities())?;
-        let mut q = c.prepare("SELECT account_id FROM machine_server_grants WHERE server_id=? AND role=?")?;
+        let mut q =
+            c.prepare("SELECT account_id FROM machine_server_grants WHERE server_id=? AND role=?")?;
         let mut rows = q.query(params![server.to_string(), id])?;
         while let Some(row) = rows.next()? {
             target(c, server, &auth, super::state::uuid(row.get(0)?)?)?;
@@ -214,7 +269,10 @@ pub(super) fn check_role_edit(
 
 fn matches_builtin(c: &Connection, server: Uuid, role: ServerRole) -> Result<EffectiveRole> {
     Ok(match role_record(c, server, role.id())? {
-        Some(record) => EffectiveRole::EditedBuiltin { role, rank: record.rank },
+        Some(record) => EffectiveRole::EditedBuiltin {
+            role,
+            rank: record.rank,
+        },
         None => EffectiveRole::Server(role),
     })
 }
@@ -255,7 +313,9 @@ pub(super) fn clear_overrides(c: &Connection, server: Uuid, account: Uuid) -> Re
 fn base(c: &Connection, server: Uuid, role: EffectiveRole) -> Result<BTreeSet<Capability>> {
     Ok(match role {
         EffectiveRole::Custom { id, .. } => custom_role(c, server, &id.to_string())?.capabilities(),
-        EffectiveRole::Server(role) | EffectiveRole::EditedBuiltin { role, .. } => role_definition(c, server, role.id())?.capabilities(),
+        EffectiveRole::Server(role) | EffectiveRole::EditedBuiltin { role, .. } => {
+            role_definition(c, server, role.id())?.capabilities()
+        }
         _ => role_definition(c, server, "owner")?.capabilities(),
     })
 }
@@ -278,7 +338,9 @@ fn effective(
     }
     for item in overrides_in(c, server, account)? {
         let cap = Capability::from_id(&item.capability).ok_or_else(|| reject(Code::RoleInvalid))?;
-        if cap.host_scoped() { continue; }
+        if cap.host_scoped() {
+            continue;
+        }
         match item.effect {
             Effect::Allow => {
                 caps.insert(cap);
@@ -337,7 +399,10 @@ fn authority(c: &Connection, actor: Actor, server: Uuid) -> Result<Authority> {
     Ok(Authority {
         owner: matches!(role, EffectiveRole::PrimaryOwner | EffectiveRole::Owner),
         rank: role.rank(),
-        caps: effective(c, server, account, role)?.into_iter().filter(|cap| !cap.host_scoped()).collect(),
+        caps: effective(c, server, account, role)?
+            .into_iter()
+            .filter(|cap| !cap.host_scoped())
+            .collect(),
     })
 }
 
@@ -377,9 +442,14 @@ pub(super) fn can_invite_builtin(
     if auth.require(Capability::InvitationsCreate).is_err() {
         return Ok(false);
     }
-    let Some(role) = role else { return Ok(true); };
+    let Some(role) = role else {
+        return Ok(true);
+    };
     let definition = role_definition(c, server, role.id())?;
-    Ok(role != ServerRole::Admin && auth.delegate(definition.rank, definition.capabilities()).is_ok())
+    Ok(role != ServerRole::Admin
+        && auth
+            .delegate(definition.rank, definition.capabilities())
+            .is_ok())
 }
 
 fn target(
@@ -396,9 +466,11 @@ fn target(
         // Include latent base authority and overrides even if a deny is active.
         auth.delegate(
             role.rank(),
-            base(c, server, role)?
-                .into_iter()
-                .chain(effective(c, server, account, role)?.into_iter().filter(|cap| !cap.host_scoped())),
+            base(c, server, role)?.into_iter().chain(
+                effective(c, server, account, role)?
+                    .into_iter()
+                    .filter(|cap| !cap.host_scoped()),
+            ),
         )?;
     }
     Ok(role)
@@ -421,7 +493,10 @@ impl HostState {
     /// Build a complete policy from one Host snapshot. Device enrollment,
     /// membership, role edits and Host access grants share its generation.
     pub fn worker_policy(&self, server: Uuid) -> Result<crate::worker::WorkerPolicy> {
-        use crate::worker::{ServerRole as WorkerRole, WhitelistRoles, WorkerActivityIdentity, WorkerGrant, WorkerPolicy};
+        use crate::worker::{
+            ServerRole as WorkerRole, WhitelistRoles, WorkerActivityIdentity, WorkerGrant,
+            WorkerPolicy,
+        };
         self.read(|c| {
             require_server(c, server)?;
             let snapshot = super::state::snapshot_in(c)?;
@@ -525,7 +600,17 @@ impl HostState {
             let role = prepare_role(fields, prior.clone())?;
             check_role_edit(c, actor, server, &id, prior.as_ref(), &role)?;
             save_role(c, server, &id, &role)?;
-            Ok((changed(c, true, "server_custom_role_write", &actor.audit(), &format!("{server}/{id}"), self.now_ms())?, role.summary(&id)))
+            Ok((
+                changed(
+                    c,
+                    true,
+                    "server_custom_role_write",
+                    &actor.audit(),
+                    &format!("{server}/{id}"),
+                    self.now_ms(),
+                )?,
+                role.summary(&id),
+            ))
         })
     }
 
@@ -546,12 +631,21 @@ impl HostState {
     }
 
     pub fn write_builtin_role(
-        &self, actor: Actor, server: Uuid, id: &str, revision: u64, fields: Option<RoleFields>,
+        &self,
+        actor: Actor,
+        server: Uuid,
+        id: &str,
+        revision: u64,
+        fields: Option<RoleFields>,
     ) -> Result<(HostSnapshot, Value)> {
         self.write(|c| {
-            if id == "owner" { return Err(reject(Code::Forbidden)); }
+            if id == "owner" {
+                return Err(reject(Code::Forbidden));
+            }
             let role = ServerRole::parse(id).map_err(|_| reject(Code::NotFound))?;
-            if role == ServerRole::Admin { return Err(reject(Code::Forbidden)); }
+            if role == ServerRole::Admin {
+                return Err(reject(Code::Forbidden));
+            }
             expect_revision(c, revision)?;
             let prior = role_definition(c, server, role.id())?;
             let reset = fields.is_none();
@@ -568,12 +662,22 @@ impl HostState {
                 check_role_edit(c, actor, server, "player", Some(&prior), &next)?;
             }
             if reset {
-                c.execute("DELETE FROM machine_roles WHERE server_id=? AND id=?", params![server.to_string(), role.id()])?;
+                c.execute(
+                    "DELETE FROM machine_roles WHERE server_id=? AND id=?",
+                    params![server.to_string(), role.id()],
+                )?;
             } else {
                 save_role(c, server, role.id(), &next)?;
             }
             super::invites::fence_role_in(c, server, role)?;
-            let snapshot = changed(c, true, "server_builtin_role_write", &actor.audit(), &format!("{server}/{}",role.id()), self.now_ms())?;
+            let snapshot = changed(
+                c,
+                true,
+                "server_builtin_role_write",
+                &actor.audit(),
+                &format!("{server}/{}", role.id()),
+                self.now_ms(),
+            )?;
             Ok((snapshot, role_summary(c, server, role.id())?))
         })
     }
@@ -597,7 +701,8 @@ impl HostState {
                 params![server.to_string(), id],
                 |row| row.get(0),
             )?;
-            if in_use || super::default_access::configured_role(c, server)?.as_deref() == Some(&id) {
+            if in_use || super::default_access::configured_role(c, server)?.as_deref() == Some(&id)
+            {
                 return Err(reject(Code::RoleInUse));
             }
             c.execute(
@@ -628,15 +733,26 @@ impl HostState {
     }
 
     pub fn set_host_membership(
-        &self, actor: Actor, account: Uuid, server: Uuid, revision: u64, role: Option<&str>,
+        &self,
+        actor: Actor,
+        account: Uuid,
+        server: Uuid,
+        revision: u64,
+        role: Option<&str>,
     ) -> Result<(HostSnapshot, Option<EffectiveRole>)> {
         self.assign_role_impl(actor, server, account, role, None, revision, true)
     }
 
     #[allow(clippy::too_many_arguments)]
     fn assign_role_impl(
-        &self, actor: Actor, server: Uuid, account: Uuid, add: Option<&str>,
-        remove: Option<&str>, revision: u64, from_host: bool,
+        &self,
+        actor: Actor,
+        server: Uuid,
+        account: Uuid,
+        add: Option<&str>,
+        remove: Option<&str>,
+        revision: u64,
+        from_host: bool,
     ) -> Result<(HostSnapshot, Option<EffectiveRole>)> {
         self.write(|c| {
             if from_host {
@@ -722,7 +838,12 @@ impl HostState {
     }
 }
 
-pub(super) fn store_assignment(c: &Connection, server: Uuid, account: Uuid, role: &str) -> Result<()> {
+pub(super) fn store_assignment(
+    c: &Connection,
+    server: Uuid,
+    account: Uuid,
+    role: &str,
+) -> Result<()> {
     super::default_access::clear_exclusion(c, server, account)?;
     c.execute("INSERT INTO machine_server_grants VALUES(?,?,?) ON CONFLICT(server_id,account_id) DO UPDATE SET role=excluded.role",
         params![server.to_string(), account.to_string(), role])?;

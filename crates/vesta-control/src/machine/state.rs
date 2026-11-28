@@ -129,7 +129,10 @@ fn migrate_server_roles(c: &Connection) -> Result<()> {
         |row| row.get::<_, bool>(0),
     )?;
     if invites_exist {
-        c.execute("UPDATE machine_invites SET role='pack-user' WHERE role='player'", [])?;
+        c.execute(
+            "UPDATE machine_invites SET role='pack-user' WHERE role='player'",
+            [],
+        )?;
     }
     // Old Player granted Pack User capabilities. Preserve those grants and
     // fence worker projections that used the previous role IDs.
@@ -261,18 +264,39 @@ mod role_migration_tests {
         .unwrap();
         migrate_server_roles(&c).unwrap();
         let role = |account: &str| -> String {
-            c.query_row("SELECT role FROM machine_server_grants WHERE account_id=?1", [account], |r| r.get(0)).unwrap()
+            c.query_row(
+                "SELECT role FROM machine_server_grants WHERE account_id=?1",
+                [account],
+                |r| r.get(0),
+            )
+            .unwrap()
         };
         assert_eq!(role("a"), "pack-user");
         assert_eq!(role("b"), "admin");
-        let invite: String = c.query_row("SELECT role FROM machine_invites", [], |r| r.get(0)).unwrap();
+        let invite: String = c
+            .query_row("SELECT role FROM machine_invites", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(invite, "pack-user");
         let (version, generation): (u32, i64) = c
-            .query_row("SELECT schema_version,auth_generation FROM machine_host", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row(
+                "SELECT schema_version,auth_generation FROM machine_host",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
         assert_eq!((version, generation), (2, 6));
         // The new roles are accepted by the migrated table.
-        c.execute("UPDATE machine_server_grants SET role='maintainer' WHERE account_id='a'", []).unwrap();
-        assert!(c.execute("UPDATE machine_server_grants SET role='owner' WHERE account_id='a'", []).is_err());
+        c.execute(
+            "UPDATE machine_server_grants SET role='maintainer' WHERE account_id='a'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            c.execute(
+                "UPDATE machine_server_grants SET role='owner' WHERE account_id='a'",
+                []
+            )
+            .is_err()
+        );
     }
 }

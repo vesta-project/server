@@ -379,15 +379,26 @@ impl RuntimeHandle {
         }
         use crate::moderation::ModerationAction;
         let action = if change.add {
-            ModerationAction::WhitelistAdd { player: change.name.clone() }
+            ModerationAction::WhitelistAdd {
+                player: change.name.clone(),
+            }
         } else {
-            ModerationAction::WhitelistRemove { player: change.name.clone() }
+            ModerationAction::WhitelistRemove {
+                player: change.name.clone(),
+            }
         };
-        let command = GameCommand::Moderate { expected_generation: generation, action };
+        let command = GameCommand::Moderate {
+            expected_generation: generation,
+            action,
+        };
         let key = format!("whitelist-sync:{}", uuid::Uuid::new_v4());
         let result = self.operations.admit_with_view(
-            subject, command.operation_type(), &command.canonical_input()?,
-            Some(&key), Some(&self.shared.view), super::ModerationOrigin::WhitelistSync(change),
+            subject,
+            command.operation_type(),
+            &command.canonical_input()?,
+            Some(&key),
+            Some(&self.shared.view),
+            super::ModerationOrigin::WhitelistSync(change),
         );
         if result.is_ok() {
             self.shared.notify_queue();

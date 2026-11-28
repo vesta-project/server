@@ -4,8 +4,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use vesta_control::files::{FileError, FileStream};
 use vesta_control::operations::{
-    ConsoleLine, MAX_CONSOLE_LINE_BYTES as MAX_LINE_BYTES, MAX_CONSOLE_PAGE_BYTES as MAX_PAGE_BYTES,
-    MAX_CONSOLE_PAGE_LINES as MAX_PAGE_LINES,
+    ConsoleLine, MAX_CONSOLE_LINE_BYTES as MAX_LINE_BYTES,
+    MAX_CONSOLE_PAGE_BYTES as MAX_PAGE_BYTES, MAX_CONSOLE_PAGE_LINES as MAX_PAGE_LINES,
 };
 
 #[derive(Deserialize, Serialize)]

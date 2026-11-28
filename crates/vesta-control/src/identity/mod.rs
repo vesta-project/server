@@ -7,7 +7,6 @@
 //! authority remains unavailable in production. Resource scopes are lexical, not
 //! filesystem confinement, and naming a capability does not implement a handler.
 mod authorization;
-pub(crate) mod worker_policy;
 mod builtin_roles;
 mod capability;
 mod domain;
@@ -21,11 +20,16 @@ mod records;
 mod repository;
 mod scope;
 mod service;
+pub(crate) mod worker_policy;
 
 pub use builtin_roles::BuiltinRole;
 pub use capability::Capability;
 
-pub(crate) fn can_delegate_role(issuer_rank: i32, role_rank: i32, builtin: Option<BuiltinRole>) -> bool {
+pub(crate) fn can_delegate_role(
+    issuer_rank: i32,
+    role_rank: i32,
+    builtin: Option<BuiltinRole>,
+) -> bool {
     role_rank < issuer_rank && !builtin.is_some_and(BuiltinRole::local_grant_only)
 }
 pub use domain::{

@@ -160,8 +160,11 @@ impl HostState {
                 };
                 let grants: Option<String> = row.get(4)?;
                 let ids: Vec<_> = decode_grants(grants.as_deref())?
-                    .iter().map(|cap| cap.id()).collect();
-                people.push(json!({"account_id":account,"name":name,"role":role,"capabilities":ids}));
+                    .iter()
+                    .map(|cap| cap.id())
+                    .collect();
+                people
+                    .push(json!({"account_id":account,"name":name,"role":role,"capabilities":ids}));
             }
             Ok(json!({"version":snapshot.revision.to_string(),"people":people}))
         })

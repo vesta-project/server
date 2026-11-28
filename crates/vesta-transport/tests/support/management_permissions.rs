@@ -62,9 +62,7 @@ fn management_storage_over_tls_is_cached_and_role_gated() {
     let (_, _, owner) = actor(&f, BuiltinRole::Owner);
     let (_, _, admin) = actor(&f, BuiltinRole::Administrator);
     let (_, _, viewer) = actor(&f, BuiltinRole::Viewer);
-    let get = |token| {
-        send(&f, "GET", "storage", &serde_json::Value::Null, token, None)
-    };
+    let get = |token| send(&f, "GET", "storage", &serde_json::Value::Null, token, None);
     assert_eq!(get(None).status, 401);
     assert_eq!(get(Some(&viewer)).status, 403);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

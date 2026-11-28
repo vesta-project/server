@@ -448,7 +448,10 @@ pub(super) async fn route(
         }
         if path == "/api/v3/manage/storage" {
             return storage.reply(
-                &host, &method, query.as_deref(), authorization.as_deref().map(String::as_str),
+                &host,
+                &method,
+                query.as_deref(),
+                authorization.as_deref().map(String::as_str),
             );
         }
         if operational {

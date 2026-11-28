@@ -508,8 +508,10 @@ impl Transport {
                 Err(InstallError::TransportFailed) if attempt + 1 < job.limits.attempts => {
                     controlled(
                         async {
-                            tokio::time::sleep(Duration::from_millis(250 * (1u64 << attempt.min(4))))
-                                .await;
+                            tokio::time::sleep(Duration::from_millis(
+                                250 * (1u64 << attempt.min(4)),
+                            ))
+                            .await;
                             Ok(())
                         },
                         job.deadline,

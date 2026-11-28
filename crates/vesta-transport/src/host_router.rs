@@ -17,14 +17,14 @@ use vesta_control::{
     worker::{ServerSubject, ServerWorker, Worker, WorkerHandle},
 };
 mod access;
+mod creates;
 mod enablement;
 mod host_access;
-mod startup;
-mod creates;
 mod imports;
 mod owners;
 mod public_access;
 mod removed;
+mod startup;
 mod storage;
 
 /// Builds the in-process worker for a registered imported server.
@@ -85,7 +85,10 @@ impl HostRouter {
         self.catalogue = vesta_control::machine::creates::LiveCatalogue::open(jobs.servers_root())
             .ok()
             .map(|c| Arc::new(c) as Arc<dyn vesta_control::machine::creates::Catalogue>);
-        self.imports = Some(Arc::new(ImportService { jobs, create: Box::new(create) }));
+        self.imports = Some(Arc::new(ImportService {
+            jobs,
+            create: Box::new(create),
+        }));
         self
     }
 
@@ -104,7 +107,10 @@ impl HostRouter {
                 return Ok(factory.as_ref());
             }
         }
-        self.imports.as_ref().map(|service| service.create.as_ref()).ok_or(JobError::UNAVAILABLE)
+        self.imports
+            .as_ref()
+            .map(|service| service.create.as_ref())
+            .ok_or(JobError::UNAVAILABLE)
     }
 
     pub fn with_storage_java_cache(mut self, java_cache: std::path::PathBuf) -> Self {
@@ -192,7 +198,11 @@ impl HostRouter {
     /// the first start after the copy was committed).
     fn import_worker(&self, server_id: Uuid) -> Result<WorkerHandle, JobError> {
         use vesta_control::machine::registry::ServerState;
-        let entry = self.identity.state.server(server_id)?.ok_or(JobError::NOT_FOUND)?;
+        let entry = self
+            .identity
+            .state
+            .server(server_id)?
+            .ok_or(JobError::NOT_FOUND)?;
         if entry.state == ServerState::Disabled {
             return Err(JobError("server_disabled"));
         }
@@ -278,12 +288,23 @@ impl HostRouter {
                 .workers
                 .lock()
                 .is_ok_and(|w| w.iter().any(|w| w.server_id() == id));
-            let configured = self.configured_worker.as_ref().is_some_and(|(server, _)| *server == id);
-            let managed = self.imports().is_some_and(|jobs| jobs.server_dir(id).join("host.toml").is_file());
-            if entry.state == vesta_control::machine::registry::ServerState::Disabled || routed || !(configured || managed) {
+            let configured = self
+                .configured_worker
+                .as_ref()
+                .is_some_and(|(server, _)| *server == id);
+            let managed = self
+                .imports()
+                .is_some_and(|jobs| jobs.server_dir(id).join("host.toml").is_file());
+            if entry.state == vesta_control::machine::registry::ServerState::Disabled
+                || routed
+                || !(configured || managed)
+            {
                 continue;
             }
-            match self.worker_factory(id).and_then(|factory| factory(id, true)) {
+            match self
+                .worker_factory(id)
+                .and_then(|factory| factory(id, true))
+            {
                 Ok(worker) => {
                     self.adopt_worker(worker);
                 }
@@ -310,7 +331,11 @@ impl HostRouter {
         let workers = self.workers.lock().map_err(|_| unavailable())?.clone();
         for worker in workers {
             if server.is_none_or(|id| worker.server_id() == id) {
-                let policy = self.identity.state.worker_policy(worker.server_id()).map_err(|_| unavailable())?;
+                let policy = self
+                    .identity
+                    .state
+                    .worker_policy(worker.server_id())
+                    .map_err(|_| unavailable())?;
                 worker.sync_policy(policy).map_err(|_| unavailable())?;
             }
         }
@@ -438,7 +463,9 @@ impl Transport {
                             return Some(snapshot.auth_generation);
                         }
                         projected_generation
-                    }).await {
+                    })
+                    .await
+                    {
                         projected_generation = generation;
                     }
                 }
@@ -458,7 +485,10 @@ impl HttpApplication for Application {
     }
     fn active_upgrades(&self) -> usize {
         self.streams.lock().map_or(0, |streams| {
-            streams.iter().map(|stream| stream.shared.realtime.active()).sum()
+            streams
+                .iter()
+                .map(|stream| stream.shared.realtime.active())
+                .sum()
         })
     }
     async fn reap(&self, all: bool) {
@@ -493,7 +523,9 @@ impl HttpApplication for Application {
 /// A port refusal on a per-server management route, in that API's envelope: the closed
 /// `conflict` code with the cause as its reason, which launchers translate.
 fn port_conflict(reason: &str) -> Reply {
-    let mut reply = routes::json(json!({"error":{"code":"conflict","reason":reason,"requestId":Uuid::new_v4()}}));
+    let mut reply = routes::json(
+        json!({"error":{"code":"conflict","reason":reason,"requestId":Uuid::new_v4()}}),
+    );
     *reply.status_mut() = StatusCode::CONFLICT;
     reply
 }
@@ -530,7 +562,9 @@ fn role_name(role: EffectiveRole) -> String {
     match role {
         EffectiveRole::PrimaryOwner => "primary_owner".into(),
         EffectiveRole::Owner => "owner".into(),
-        EffectiveRole::Server(role) | EffectiveRole::EditedBuiltin { role, .. } => role.as_str().into(),
+        EffectiveRole::Server(role) | EffectiveRole::EditedBuiltin { role, .. } => {
+            role.as_str().into()
+        }
         EffectiveRole::Custom { id, .. } => id.to_string(),
     }
 }
@@ -542,33 +576,56 @@ fn host_role_name(role: HostRole) -> &'static str {
 }
 
 fn is_enrollment_path(path: &str) -> bool {
-    matches!(path,
-        "/v1/host/sessions" | "/v1/host/sessions/challenge" | "/v1/host/sessions/key-challenge"
-        | "/v1/host/pake/start" | "/v1/host/pake/finish" | "/v1/host/accounts/challenge"
-        | "/v1/host/accounts/complete" | "/v1/host/claim" | "/v1/host/links"
-        | "/v1/host/invites/redeem" | "/v1/host/sign-in")
+    matches!(
+        path,
+        "/v1/host/sessions"
+            | "/v1/host/sessions/challenge"
+            | "/v1/host/sessions/key-challenge"
+            | "/v1/host/pake/start"
+            | "/v1/host/pake/finish"
+            | "/v1/host/accounts/challenge"
+            | "/v1/host/accounts/complete"
+            | "/v1/host/claim"
+            | "/v1/host/links"
+            | "/v1/host/invites/redeem"
+            | "/v1/host/sign-in"
+    )
 }
 
 fn server_suffix(path: &str) -> Option<&str> {
-    path.strip_prefix("/v1/servers/")?.split_once('/').map(|(_, suffix)| suffix)
+    path.strip_prefix("/v1/servers/")?
+        .split_once('/')
+        .map(|(_, suffix)| suffix)
 }
 
 fn is_server_access_read(path: &str) -> bool {
-    matches!(server_suffix(path), Some("manage/roles" | "manage/roles/capabilities" | "manage/default-access"))
+    matches!(
+        server_suffix(path),
+        Some("manage/roles" | "manage/roles/capabilities" | "manage/default-access")
+    )
 }
 
 fn conditional_worker_read(method: &Method, suffix: &str) -> bool {
     *method == Method::GET && matches!(suffix, "manage/content" | "manage/files")
 }
 
-fn conditional_read(method: &Method, path: &str, headers: &http::HeaderMap, mut reply: Reply) -> Reply {
+fn conditional_read(
+    method: &Method,
+    path: &str,
+    headers: &http::HeaderMap,
+    mut reply: Reply,
+) -> Reply {
+    use http::header::{CONTENT_LENGTH, ETAG, IF_NONE_MATCH};
     use sha2::{Digest, Sha256};
-    use http::header::{ETAG, IF_NONE_MATCH, CONTENT_LENGTH};
 
-    if *method != Method::GET || reply.status() != StatusCode::OK ||
-        !(matches!(path, "/v1/host/manage/capabilities" | "/v1/host/manage/people"
-                       | "/v1/host/manage/role-presets")
-            || (path.starts_with("/v1/host/manage/people/") && path.ends_with("/memberships"))
+    if *method != Method::GET
+        || reply.status() != StatusCode::OK
+        || !(matches!(
+            path,
+            "/v1/host/manage/capabilities"
+                | "/v1/host/manage/people"
+                | "/v1/host/manage/role-presets"
+        ) || (path.starts_with("/v1/host/manage/people/") && path.ends_with("/memberships"))
             || is_server_access_read(path)
             || server_suffix(path).is_some_and(|suffix| conditional_worker_read(method, suffix)))
     {
@@ -577,21 +634,36 @@ fn conditional_read(method: &Method, path: &str, headers: &http::HeaderMap, mut 
 
     // The inherited envelope carries a fresh request ID. Compare only the
     // resource data, after worker URLs and server IDs have been translated.
-    let ReplyBody::Bytes(bytes) = reply.body() else { return reply; };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else { return reply; };
-    let Some(data) = value.get("data") else { return reply; };
+    let ReplyBody::Bytes(bytes) = reply.body() else {
+        return reply;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return reply;
+    };
+    let Some(data) = value.get("data") else {
+        return reply;
+    };
     let digest = Sha256::digest(serde_json::to_vec(data).expect("JSON value"));
     let tag = format!("\"{digest:x}\"");
-    if headers.get_all(IF_NONE_MATCH).iter().filter_map(|v| v.to_str().ok()).any(|value| {
-        value.trim() == "*" || value.split(',').map(str::trim).any(|given| {
-            given.strip_prefix("W/").unwrap_or(given) == tag
+    if headers
+        .get_all(IF_NONE_MATCH)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|value| {
+            value.trim() == "*"
+                || value
+                    .split(',')
+                    .map(str::trim)
+                    .any(|given| given.strip_prefix("W/").unwrap_or(given) == tag)
         })
-    }) {
+    {
         *reply.status_mut() = StatusCode::NOT_MODIFIED;
         *reply.body_mut() = ReplyBody::Bytes(Bytes::new());
         reply.headers_mut().remove(CONTENT_LENGTH);
     }
-    reply.headers_mut().insert(ETAG, format!("W/{tag}").parse().expect("SHA-256 validator"));
+    reply
+        .headers_mut()
+        .insert(ETAG, format!("W/{tag}").parse().expect("SHA-256 validator"));
     reply
 }
 /// Build the complete snapshot, including every active device, in stable order.
@@ -602,10 +674,16 @@ fn subject(
 ) -> Result<ServerSubject, Reply> {
     let state = &router.identity.state;
     let unavailable = || failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable");
-    let policy = state.worker_policy(worker.server_id()).map_err(|_| unavailable())?;
-    let capabilities = policy.grants.iter().find(|grant|
-        grant.device_id == device.device_id && grant.account_id == device.account_id)
-        .ok_or_else(|| failure(StatusCode::NOT_FOUND, "not_found"))?.capabilities.clone();
+    let policy = state
+        .worker_policy(worker.server_id())
+        .map_err(|_| unavailable())?;
+    let capabilities = policy
+        .grants
+        .iter()
+        .find(|grant| grant.device_id == device.device_id && grant.account_id == device.account_id)
+        .ok_or_else(|| failure(StatusCode::NOT_FOUND, "not_found"))?
+        .capabilities
+        .clone();
     let host_id = policy.host_id;
     let generation = policy.generation;
     worker.sync_policy(policy).map_err(|_| unavailable())?;
@@ -639,8 +717,12 @@ impl Application {
     }
 
     fn check_device_rate(&self, device: Uuid) -> Result<(), Reply> {
-        let decision = self.device_limiter.lock().map_or(AdmissionDecision::ClockUnavailable,
-            |mut l| l.try_acquire_key(device));
+        let decision = self
+            .device_limiter
+            .lock()
+            .map_or(AdmissionDecision::ClockUnavailable, |mut l| {
+                l.try_acquire_key(device)
+            });
         Self::check_rate(decision)
     }
 
@@ -664,7 +746,9 @@ impl Application {
         let decision = self
             .limiter
             .lock()
-            .map_or(AdmissionDecision::ClockUnavailable, |mut l| l.try_acquire(peer.ip()));
+            .map_or(AdmissionDecision::ClockUnavailable, |mut l| {
+                l.try_acquire(peer.ip())
+            });
         if let Err(reply) = Self::check_rate(decision) {
             return reply;
         }
@@ -695,15 +779,21 @@ impl Application {
         let method = request.method().clone();
         let path = request.uri().path().to_owned();
         let jobs = if method == Method::GET
-            && (matches!(path.as_str(), "/v1/host" | "/v1/host/discovery" | "/v1/host/servers")
-                || is_server_access_read(&path)
+            && (matches!(
+                path.as_str(),
+                "/v1/host" | "/v1/host/discovery" | "/v1/host/servers"
+            ) || is_server_access_read(&path)
                 || path.starts_with("/v1/host/manage/"))
         {
             &self.read_jobs
         } else if method == Method::POST && is_enrollment_path(&path) {
             if path.starts_with("/v1/host/sessions") {
-                let decision = self.session_peer_limiter.lock().map_or(
-                    AdmissionDecision::ClockUnavailable, |mut l| l.try_acquire(peer.ip()));
+                let decision = self
+                    .session_peer_limiter
+                    .lock()
+                    .map_or(AdmissionDecision::ClockUnavailable, |mut l| {
+                        l.try_acquire(peer.ip())
+                    });
                 if let Err(reply) = Self::check_rate(decision) {
                     return reply;
                 }
@@ -736,7 +826,9 @@ impl Application {
             match tokio::time::timeout(
                 Duration::from_millis(250),
                 budget.clone().acquire_many_owned(reserve),
-            ).await {
+            )
+            .await
+            {
                 Ok(Ok(permit)) => Some(permit),
                 _ => return failure(StatusCode::SERVICE_UNAVAILABLE, "transport_busy"),
             }
@@ -757,21 +849,20 @@ impl Application {
             }
         }
         let app = self.clone();
-        jobs
-            .execute_for(false, move || {
-                let _permit = permit;
-                let reply = app.dispatch_sync(
-                    &method,
-                    &path,
-                    query.as_deref(),
-                    &headers,
-                    connection,
-                    peer,
-                    &bytes,
-                );
-                conditional_read(&method, &path, &headers, reply)
-            })
-            .await
+        jobs.execute_for(false, move || {
+            let _permit = permit;
+            let reply = app.dispatch_sync(
+                &method,
+                &path,
+                query.as_deref(),
+                &headers,
+                connection,
+                peer,
+                &bytes,
+            );
+            conditional_read(&method, &path, &headers, reply)
+        })
+        .await
     }
     /// `POST /v1/host/creates/uploads`: owner-only raw server pack archive.
     async fn create_upload(self: &Arc<Self>, request: Request<Incoming>) -> Reply {
@@ -797,7 +888,9 @@ impl Application {
         let feed = async move {
             let mut body = request.into_body();
             while let Some(frame) = body.frame().await {
-                let Ok(frame) = frame else { return; };
+                let Ok(frame) = frame else {
+                    return;
+                };
                 if let Ok(data) = frame.into_data()
                     && send.send(Some(data)).await.is_err()
                 {
@@ -971,9 +1064,11 @@ impl Application {
                     .ok()
                     .filter(|id| {
                         state.server(*id).ok().flatten().is_some_and(|e| {
-                            !matches!(e.state,
-                                vesta_control::machine::registry::ServerState::Deleted |
-                                vesta_control::machine::registry::ServerState::Disabled)
+                            !matches!(
+                                e.state,
+                                vesta_control::machine::registry::ServerState::Deleted
+                                    | vesta_control::machine::registry::ServerState::Disabled
+                            )
                         })
                     })
                     .and_then(|id| {
@@ -1009,14 +1104,20 @@ impl Application {
                         Key(vesta_control::machine::sessions::SessionKeyChallengeRequest),
                     }
                     return match input!() {
-                        Challenge::Id(r) => self.identity_output(identity.session_challenge(r), true),
-                        Challenge::Key(r) => self.identity_output(identity.session_key_challenge(r), true),
+                        Challenge::Id(r) => {
+                            self.identity_output(identity.session_challenge(r), true)
+                        }
+                        Challenge::Key(r) => {
+                            self.identity_output(identity.session_key_challenge(r), true)
+                        }
                     };
                 }
                 "/v1/host/sessions/key-challenge" => {
                     return self.identity_output(identity.session_key_challenge(input!()), true);
                 }
-                "/v1/host/sessions" => return self.identity_output(identity.session_complete(input!()), true),
+                "/v1/host/sessions" => {
+                    return self.identity_output(identity.session_complete(input!()), true);
+                }
                 _ => {}
             }
             if matches!(
@@ -1051,10 +1152,9 @@ impl Application {
                             let _ = self.router.refresh_worker_policies(None);
                         }
                         output(result)
-                    },
-                    ("/v1/host/accounts/challenge", None) => {
-                        self.identity_output(identity.sign_in_challenge(c, peer.ip(), input!()), false)
                     }
+                    ("/v1/host/accounts/challenge", None) => self
+                        .identity_output(identity.sign_in_challenge(c, peer.ip(), input!()), false),
                     ("/v1/host/accounts/complete", None) => {
                         output(identity.sign_in_complete(c, input!()))
                     }
@@ -1134,7 +1234,15 @@ impl Application {
             };
         }
         if path == "/v1/host/servers/removed" || path.starts_with("/v1/host/servers/removed/") {
-            return removed::removed_routes(&self.router, &device, method, path, query, headers, bytes);
+            return removed::removed_routes(
+                &self.router,
+                &device,
+                method,
+                path,
+                query,
+                headers,
+                bytes,
+            );
         }
         if method == Method::DELETE && path.starts_with("/v1/host/servers/") && query.is_none() {
             return removed::dispatch(&self.router, &device, path, bytes);
@@ -1142,7 +1250,8 @@ impl Application {
         if let Some(rest) = path.strip_prefix("/v1/servers/") {
             // Serialize admission with removal: no request can re-expand worker
             // grants or enqueue a new job while its worker is being stopped.
-            let access_read = method == Method::GET && query.is_none() && is_server_access_read(path);
+            let access_read =
+                method == Method::GET && query.is_none() && is_server_access_read(path);
             let _removal = if access_read {
                 None
             } else {
@@ -1199,7 +1308,15 @@ impl Application {
                     .map(|w| Arc::new(w) as Arc<dyn ServerWorker>)
             });
             if suffix == "manage/startup" {
-                return startup::dispatch(state, &device, id, worker.as_deref(), method, query, bytes);
+                return startup::dispatch(
+                    state,
+                    &device,
+                    id,
+                    worker.as_deref(),
+                    method,
+                    query,
+                    bytes,
+                );
             }
             if disabled {
                 return failure(StatusCode::CONFLICT, "server_disabled");
@@ -1221,7 +1338,9 @@ impl Application {
                     Err(error) => return crate::manage::management_error(error),
                 };
                 if let Err(error) = worker_host.management().authorize(
-                    "trusted-worker", Capability::StorageView, None,
+                    "trusted-worker",
+                    Capability::StorageView,
+                    None,
                 ) {
                     return crate::manage::management_error(error);
                 }
@@ -1233,7 +1352,11 @@ impl Application {
                     Err(error) => return crate::manage::management_error(error),
                 };
                 let allowed = host.with_policy(|policy| {
-                    host.sessions().authenticate("trusted-worker", std::time::Instant::now(), policy)
+                    host.sessions().authenticate(
+                        "trusted-worker",
+                        std::time::Instant::now(),
+                        policy,
+                    )
                 });
                 if !matches!(allowed, Ok(Ok(_))) {
                     return failure(StatusCode::FORBIDDEN, "pack_access_denied");
@@ -1263,12 +1386,15 @@ impl Application {
             // Changing server-port in the server's settings: the port must be free on this
             // machine (no other server holds it, nothing is listening), and the registry,
             // which allocates ports for new servers, follows the change.
-            let new_port = (suffix == "manage/config/server-properties" && *method == Method::PATCH)
+            let new_port = (suffix == "manage/config/server-properties"
+                && *method == Method::PATCH)
                 .then(|| serde_json::from_slice::<serde_json::Value>(bytes).ok())
                 .flatten()
                 .and_then(|body| {
                     let value = &body["changes"]["server-port"];
-                    value.as_u64().or_else(|| value.as_str()?.trim().parse().ok())
+                    value
+                        .as_u64()
+                        .or_else(|| value.as_str()?.trim().parse().ok())
                 })
                 .and_then(|port| u16::try_from(port).ok())
                 .filter(|port| *port > 0);
@@ -1280,7 +1406,9 @@ impl Application {
                             return port_conflict("game_port_in_use");
                         }
                         let probe = vesta_control::machine::imports::inspection::port_state(
-                            port, "tcp", &std::collections::BTreeSet::new(),
+                            port,
+                            "tcp",
+                            &std::collections::BTreeSet::new(),
                         );
                         match probe.state {
                             "free" => Some(port),
@@ -1316,7 +1444,8 @@ impl Application {
                 self.downloads.clone(),
             );
             // A source-only branding change also works before a custom name is set.
-            if suffix == "manage/server" && reply.status() == StatusCode::OK
+            if suffix == "manage/server"
+                && reply.status() == StatusCode::OK
                 && let ReplyBody::Bytes(bytes) = reply.body_mut()
                 && let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes)
                 && let Some(branding) = value["data"].as_object_mut()
@@ -1361,7 +1490,17 @@ impl Application {
             let Ok(s) = state.snapshot() else {
                 return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable");
             };
-            let mut capabilities = vec!["host-access", "role-presets", "server-enablement", "public-access", "folders", "import-inspect", "resource-plan", "removed-server-retention", "console-history"];
+            let mut capabilities = vec![
+                "host-access",
+                "role-presets",
+                "server-enablement",
+                "public-access",
+                "folders",
+                "import-inspect",
+                "resource-plan",
+                "removed-server-retention",
+                "console-history",
+            ];
             if self.router.imports.is_some() {
                 capabilities.extend(["removed-servers", "server-purge", "storage"]);
                 capabilities.push("import-jobs");
@@ -1376,7 +1515,8 @@ impl Application {
                 capabilities.extend(["server-storage", "storage-cleanup"]);
             }
             let mut value = json!({"hostId":s.host_id,"name":self.router.display_name(),"fingerprint":self.tls.fingerprint().unwrap_or_default(),"endpoints":[],"authGeneration":s.auth_generation.to_string(),"revision":s.revision.to_string(),"role":owner.map(host_role_name),"capabilities":capabilities});
-            value["hostCapabilities"] = json!(host_caps.iter().map(|cap| cap.id()).collect::<Vec<_>>());
+            value["hostCapabilities"] =
+                json!(host_caps.iter().map(|cap| cap.id()).collect::<Vec<_>>());
             if host_caps.contains(&Capability::HostSettingsEdit) {
                 let Ok(settings) = state.settings() else {
                     return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable");
@@ -1387,12 +1527,17 @@ impl Application {
             }
             return routes::json(value);
         }
-        let delegated = (method == Method::PATCH && path == "/v1/host" && host_caps.contains(&Capability::HostSettingsEdit))
+        let delegated = (method == Method::PATCH
+            && path == "/v1/host"
+            && host_caps.contains(&Capability::HostSettingsEdit))
             || ((path.starts_with("/v1/host/catalogue/") || path.starts_with("/v1/host/creates/"))
                 && host_caps.contains(&Capability::HostServersCreate))
-            || (method == Method::GET && path == "/v1/host/devices"
-                && (host_caps.contains(&Capability::HostAccessManage) || host_caps.contains(&Capability::DevicesRevoke)))
-            || (method == Method::DELETE && path.starts_with("/v1/host/devices/")
+            || (method == Method::GET
+                && path == "/v1/host/devices"
+                && (host_caps.contains(&Capability::HostAccessManage)
+                    || host_caps.contains(&Capability::DevicesRevoke)))
+            || (method == Method::DELETE
+                && path.starts_with("/v1/host/devices/")
                 && host_caps.contains(&Capability::DevicesRevoke));
         if owner.is_none() && !delegated {
             return failure(StatusCode::FORBIDDEN, "forbidden");
@@ -1450,7 +1595,10 @@ impl Application {
                 return failure(StatusCode::BAD_REQUEST, "invalid_request");
             };
             return match state.revoke_device(Actor::Account(device.account_id), id) {
-                Ok(_) => self.router.refresh_worker_policies(None).map_or_else(|reply| reply, |_| no_content()),
+                Ok(_) => self
+                    .router
+                    .refresh_worker_policies(None)
+                    .map_or_else(|reply| reply, |_| no_content()),
                 Err(_) => failure(StatusCode::FORBIDDEN, "forbidden"),
             };
         }
@@ -1526,9 +1674,11 @@ impl Application {
                 {
                     return Err(failure(StatusCode::NOT_FOUND, "not_found"));
                 }
-                if router.identity.state.server(id).is_ok_and(|entry| entry.is_some_and(|entry|
-                    entry.state == vesta_control::machine::registry::ServerState::Disabled))
-                {
+                if router.identity.state.server(id).is_ok_and(|entry| {
+                    entry.is_some_and(|entry| {
+                        entry.state == vesta_control::machine::registry::ServerState::Disabled
+                    })
+                }) {
                     return Err(failure(StatusCode::CONFLICT, "server_disabled"));
                 }
                 let w = router
@@ -1604,7 +1754,11 @@ impl Application {
                 return failure(StatusCode::SERVICE_UNAVAILABLE, "realtime_busy");
             }
             let peer = peer.ip().to_canonical();
-            if streams.iter().filter(|stream| stream.account == account).count() >= 8
+            if streams
+                .iter()
+                .filter(|stream| stream.account == account)
+                .count()
+                >= 8
                 || streams.iter().filter(|stream| stream.peer == peer).count() >= 12
             {
                 return failure(StatusCode::SERVICE_UNAVAILABLE, "realtime_busy");

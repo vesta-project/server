@@ -336,7 +336,11 @@ async fn minecraft_catalogue_preserves_upstream_release_evidence_and_reuses_cach
             ]
         }))).expect(1).mount(&fixture.server).await;
     for _ in 0..2 {
-        let versions = fixture.installer.minecraft_catalogue(&SilentProgressReporter).await.unwrap();
+        let versions = fixture
+            .installer
+            .minecraft_catalogue(&SilentProgressReporter)
+            .await
+            .unwrap();
         assert_eq!(versions.len(), 2);
         assert!(versions[0].experimental);
         assert!(!versions[0].recommended);

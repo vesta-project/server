@@ -113,7 +113,10 @@ impl HostState {
     /// valid. Returns whether the stored state changed. Deleted entries and the
     /// first-slice `registered` state before any start are left alone.
     pub fn observe_server_state(&self, id: Uuid, observed: ServerState) -> Result<bool> {
-        if matches!(observed, ServerState::Deleted | ServerState::Registered | ServerState::Disabled) {
+        if matches!(
+            observed,
+            ServerState::Deleted | ServerState::Registered | ServerState::Disabled
+        ) {
             return Err(reject(Code::InvalidRequest));
         }
         let mut updated = false;
@@ -186,13 +189,22 @@ impl HostState {
     }
     pub fn authorize_enablement(&self, actor: Actor, server: Uuid, revision: u64) -> Result<()> {
         self.read(|c| {
-            super::roles::require_capability(c, actor, server, crate::identity::Capability::LifecycleEnable)?;
+            super::roles::require_capability(
+                c,
+                actor,
+                server,
+                crate::identity::Capability::LifecycleEnable,
+            )?;
             expect_revision(c, revision)
         })
     }
 
     pub fn set_server_enabled(
-        &self, actor: Actor, server: Uuid, enabled: bool, revision: Option<u64>,
+        &self,
+        actor: Actor,
+        server: Uuid,
+        enabled: bool,
+        revision: Option<u64>,
     ) -> Result<HostSnapshot> {
         self.write(|c| {
             super::roles::require_capability(c, actor, server, crate::identity::Capability::LifecycleEnable)?;
@@ -218,14 +230,18 @@ impl HostState {
     }
     pub fn public_server_at_port(&self, port: u16) -> Result<Option<(Uuid, Uuid)>> {
         self.read(|c| {
-            let entry = c.query_row(
-                "SELECT h.host_id,s.server_id FROM machine_servers s CROSS JOIN machine_host h
+            let entry = c
+                .query_row(
+                    "SELECT h.host_id,s.server_id FROM machine_servers s CROSS JOIN machine_host h
                  WHERE s.game_port=? AND s.state!='deleted' AND s.enabled=1
                    AND s.visibility='public' AND s.default_role_id IS NOT NULL",
-                [port],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-            ).optional()?;
-            entry.map(|(host, server)| Ok((uuid(host)?, uuid(server)?))).transpose()
+                    [port],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            entry
+                .map(|(host, server)| Ok((uuid(host)?, uuid(server)?)))
+                .transpose()
         })
     }
     pub fn visible_servers(&self, account: Uuid) -> Result<Vec<(ServerEntry, EffectiveRole)>> {
@@ -310,12 +326,17 @@ fn resolve_access_in(
     Ok(None)
 }
 
-pub(super) fn server_grant_in(c: &Connection, server: Uuid, account: Uuid) -> Result<Option<String>> {
+pub(super) fn server_grant_in(
+    c: &Connection,
+    server: Uuid,
+    account: Uuid,
+) -> Result<Option<String>> {
     Ok(c.query_row(
         "SELECT role FROM machine_server_grants WHERE server_id=? AND account_id=?",
         params![server.to_string(), account.to_string()],
         |row| row.get(0),
-    ).optional()?)
+    )
+    .optional()?)
 }
 
 pub(super) fn server_in(c: &Connection, id: Uuid) -> Result<Option<ServerEntry>> {

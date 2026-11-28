@@ -1159,11 +1159,19 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
 }
 /// Usage against budgets. `backups_stopped` carries only fixed limit codes.
 fn storage_json(status: &vesta_control::backups::StorageStatus) -> serde_json::Value {
-    use vesta_control::backups::{COLLECTION_SIZE_LIMIT, DISK_SPACE_LOW, SNAPSHOT_LIMIT, SNAPSHOT_SIZE_LIMIT, STORAGE_LIMIT};
+    use vesta_control::backups::{
+        COLLECTION_SIZE_LIMIT, DISK_SPACE_LOW, SNAPSHOT_LIMIT, SNAPSHOT_SIZE_LIMIT, STORAGE_LIMIT,
+    };
     let stopped = status.backups_stopped.as_deref().and_then(|code| {
-        [SNAPSHOT_LIMIT, SNAPSHOT_SIZE_LIMIT, COLLECTION_SIZE_LIMIT, STORAGE_LIMIT, DISK_SPACE_LOW]
-            .into_iter()
-            .find(|c| *c == code)
+        [
+            SNAPSHOT_LIMIT,
+            SNAPSHOT_SIZE_LIMIT,
+            COLLECTION_SIZE_LIMIT,
+            STORAGE_LIMIT,
+            DISK_SPACE_LOW,
+        ]
+        .into_iter()
+        .find(|c| *c == code)
     });
     json!({
         "repository_bytes": status.repository_bytes,

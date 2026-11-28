@@ -466,9 +466,17 @@ pub(crate) fn branding_game_icon(bytes: &[u8]) -> Option<Vec<u8>> {
         let start = y * stride;
         let filter = rows[start];
         for x in 1..stride {
-            let left = if x > channels { rows[start + x - channels] } else { 0 };
+            let left = if x > channels {
+                rows[start + x - channels]
+            } else {
+                0
+            };
             let up = if y > 0 { rows[start + x - stride] } else { 0 };
-            let upper_left = if y > 0 && x > channels { rows[start + x - stride - channels] } else { 0 };
+            let upper_left = if y > 0 && x > channels {
+                rows[start + x - stride - channels]
+            } else {
+                0
+            };
             let prediction = match filter {
                 0 => 0,
                 1 => left,
@@ -484,8 +492,8 @@ pub(crate) fn branding_game_icon(bytes: &[u8]) -> Option<Vec<u8>> {
     for y in 0..64 {
         output.push(0);
         for x in 0..64 {
-            let start = ((y * 2 + 1) * side / 128) * stride
-                + 1 + ((x * 2 + 1) * side / 128) * channels;
+            let start =
+                ((y * 2 + 1) * side / 128) * stride + 1 + ((x * 2 + 1) * side / 128) * channels;
             output.extend_from_slice(&rows[start..start + channels]);
         }
     }
@@ -500,7 +508,13 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
     let (a, b, c) = (i16::from(a), i16::from(b), i16::from(c));
     let p = a + b - c;
     let (pa, pb, pc) = ((p - a).abs(), (p - b).abs(), (p - c).abs());
-    if pa <= pb && pa <= pc { a as u8 } else if pb <= pc { b as u8 } else { c as u8 }
+    if pa <= pb && pa <= pc {
+        a as u8
+    } else if pb <= pc {
+        b as u8
+    } else {
+        c as u8
+    }
 }
 
 fn normalize_png(

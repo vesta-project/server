@@ -215,7 +215,12 @@ fn job_routes(
             if !matches!(job.state.as_str(), "ready" | "starting" | "online") {
                 return job_failure(JobError::CONFLICT);
             }
-            let _admission = tryjob!(router.removal_lock.lock().map_err(|_| JobError::UNAVAILABLE));
+            let _admission = tryjob!(
+                router
+                    .removal_lock
+                    .lock()
+                    .map_err(|_| JobError::UNAVAILABLE)
+            );
             let handle = tryjob!(router.import_worker(server));
             let job = tryjob!(jobs.create_start(&binding, id, &handle));
             router.refresh_server_states();

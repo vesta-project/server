@@ -216,7 +216,12 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let capabilities: &[Capability] = match action {
         "files" if request.method == Method::GET => &[Capability::FilesList],
         "files" | "files/delete" => &[Capability::FilesDelete],
-        "files/content" | "files/download" | "files/image-preview" | "files/tail" | "files/lines" | "files/follow"
+        "files/content"
+        | "files/download"
+        | "files/image-preview"
+        | "files/tail"
+        | "files/lines"
+        | "files/follow"
             if request.method == Method::GET =>
         {
             &[Capability::FilesRead]
@@ -264,9 +269,16 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             return match host.files().image_preview(&subject, &path) {
                 Ok(Some((bytes, mime))) => {
                     let mut reply = response(StatusCode::OK, bytes, mime);
-                    reply.headers_mut().insert("x-vesta-api-version", http::HeaderValue::from_static("3"));
-                    reply.headers_mut().insert("x-content-type-options", http::HeaderValue::from_static("nosniff"));
-                    reply.headers_mut().insert("cache-control", http::HeaderValue::from_static("no-store"));
+                    reply
+                        .headers_mut()
+                        .insert("x-vesta-api-version", http::HeaderValue::from_static("3"));
+                    reply.headers_mut().insert(
+                        "x-content-type-options",
+                        http::HeaderValue::from_static("nosniff"),
+                    );
+                    reply
+                        .headers_mut()
+                        .insert("cache-control", http::HeaderValue::from_static("no-store"));
                     reply
                 }
                 Ok(None) => error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type"),
@@ -480,13 +492,17 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             )
         }
         ("POST", "files/delete") => {
-            if request.query.is_some() || request.if_match.is_some() || request.if_none_match.is_some() {
+            if request.query.is_some()
+                || request.if_match.is_some()
+                || request.if_none_match.is_some()
+            {
                 return invalid();
             }
             let Some(input) = decode::<BulkDelete>(request.bytes) else {
                 return invalid();
             };
-            host.files().delete_remote_batch(&subject, &key, &input.items)
+            host.files()
+                .delete_remote_batch(&subject, &key, &input.items)
         }
         ("POST", "files/mkdir") => {
             if request.query.is_some()

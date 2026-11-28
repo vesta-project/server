@@ -62,17 +62,17 @@ use vesta_control::{
 
 mod file_body;
 mod manage;
-mod standalone_storage;
-pub mod worker;
 mod pack_sync;
 pub mod pending;
 mod probe;
 mod public_resource_packs;
 mod realtime;
 mod routes;
+mod standalone_storage;
+pub mod worker;
 pub use probe::LocalUpdateProbe;
-pub mod host_pake;
 pub mod host_identity;
+pub mod host_pake;
 mod tls;
 type Reply = Response<ReplyBody>;
 const DOWNLOADS: usize = 2;
@@ -1238,8 +1238,13 @@ fn set_retry_hint(reply: &mut Reply) {
     // Rate limiters with a known next admission set their own deadline. For
     // capacity, I/O and shutdown failures there is no known recovery time.
     // Supply a conservative polling interval for backoff in those cases.
-    if matches!(reply.status(), StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE) {
-        reply.headers_mut().entry(http::header::RETRY_AFTER)
+    if matches!(
+        reply.status(),
+        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+    ) {
+        reply
+            .headers_mut()
+            .entry(http::header::RETRY_AFTER)
             .or_insert(http::HeaderValue::from_static("2"));
     }
 }

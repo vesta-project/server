@@ -382,7 +382,9 @@ impl HostIdentity {
         })
     }
     fn write_sessions(&self) -> Result<RwLockWriteGuard<'_, HostSessions>> {
-        self.sessions.write().map_err(|_| IdentityFailure("identity_unavailable"))
+        self.sessions
+            .write()
+            .map_err(|_| IdentityFailure("identity_unavailable"))
     }
 
     pub fn session_challenge(&self, request: SessionChallengeRequest) -> Result<SessionChallenge> {
@@ -398,15 +400,21 @@ impl HostIdentity {
         self.write_sessions()?.complete(request)
     }
     pub fn authenticate(&self, token: &str) -> Result<vesta_control::machine::owners::Device> {
-        self.sessions.read().map_err(|_| IdentityFailure("identity_unavailable"))?
+        self.sessions
+            .read()
+            .map_err(|_| IdentityFailure("identity_unavailable"))?
             .authenticate(token)
     }
     pub(crate) fn retry_after(&self, session_endpoint: bool) -> std::time::Duration {
         let window = std::time::Duration::from_secs(60);
         if session_endpoint {
-            self.sessions.read().map_or(window, |sessions| sessions.retry_after())
+            self.sessions
+                .read()
+                .map_or(window, |sessions| sessions.retry_after())
         } else {
-            lock(&self.sign_in_limits).map_or(window, |limits| window.saturating_sub(limits.window.elapsed()))
+            lock(&self.sign_in_limits).map_or(window, |limits| {
+                window.saturating_sub(limits.window.elapsed())
+            })
         }
     }
     pub fn logout(&self, token: &str) -> Result<()> {

@@ -228,7 +228,9 @@ impl CopiedExport {
                 let vesta_secret = ["setup.json", "host.toml", "key.pem", "certificate.pem"]
                     .iter()
                     .any(|n| name.eq_ignore_ascii_case(n));
-                if name.eq_ignore_ascii_case("vesta-state.db") || (directory.is_empty() && vesta_secret) {
+                if name.eq_ignore_ascii_case("vesta-state.db")
+                    || (directory.is_empty() && vesta_secret)
+                {
                     return Err(FileError::ProtectedPath);
                 }
                 let path = if directory.is_empty() {

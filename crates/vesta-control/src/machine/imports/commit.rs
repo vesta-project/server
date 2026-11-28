@@ -120,7 +120,9 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> JobResult<()> {
 /// Complete effective snapshot for a new server: every host owner's active
 /// devices with the host-owner expansion. No per-server grants exist yet.
 pub fn owner_policy(host: &HostState, server_id: Uuid) -> JobResult<WorkerPolicy> {
-    let whitelist_owners = host.owners(Actor::LocalRecovery)?.into_iter()
+    let whitelist_owners = host
+        .owners(Actor::LocalRecovery)?
+        .into_iter()
         .filter_map(|owner| owner.name.map(|name| (owner.account_id, name)))
         .collect();
     let capabilities: Vec<String> = ServerRole::Owner
@@ -344,8 +346,16 @@ impl ImportJobs {
         self.open_worker(server_id, clock, true)
     }
 
-    pub fn open_worker(&self, server_id: Uuid, clock: Arc<dyn Clock>, boot: bool) -> JobResult<Worker> {
-        let entry = self.0.host.server(server_id)?
+    pub fn open_worker(
+        &self,
+        server_id: Uuid,
+        clock: Arc<dyn Clock>,
+        boot: bool,
+    ) -> JobResult<Worker> {
+        let entry = self
+            .0
+            .host
+            .server(server_id)?
             .filter(|entry| entry.state != ServerState::Deleted)
             .ok_or(JobError::NOT_FOUND)?;
         if entry.state == ServerState::Disabled {
@@ -359,14 +369,25 @@ impl ImportJobs {
         use crate::machine::startup::StartupMode;
         let pending_removal = crate::machine::removed::has_pending(&self.0.host, server_id)?;
         let startup = if boot && !pending_removal && self.setup_completed(server_id)? {
-            self.0.host.startup_settings(server_id)?.map_or(StartupMode::Configured, StartupMode::Managed)
+            self.0
+                .host
+                .startup_settings(server_id)?
+                .map_or(StartupMode::Configured, StartupMode::Managed)
         } else {
             StartupMode::Deferred
         };
         if pending_removal {
-            let worker = Worker::open_with_startup(config, clock, None, snapshot.host_id, server_id, startup)
-                .map_err(|_| JobError("worker_unavailable"))?;
-            worker.recover_removal_fence(snapshot.auth_generation)
+            let worker = Worker::open_with_startup(
+                config,
+                clock,
+                None,
+                snapshot.host_id,
+                server_id,
+                startup,
+            )
+            .map_err(|_| JobError("worker_unavailable"))?;
+            worker
+                .recover_removal_fence(snapshot.auth_generation)
                 .map_err(|_| JobError("worker_unavailable"))?;
             return Ok(worker);
         }
@@ -508,7 +529,9 @@ impl ImportJobs {
         }
         let policy = self.0.host.worker_policy(server_id)?;
         // Same generation and document is accepted again; a newer host sync wins.
-        worker.sync_policy(policy).map_err(|_| JobError::FORBIDDEN)?;
+        worker
+            .sync_policy(policy)
+            .map_err(|_| JobError::FORBIDDEN)?;
         let (server_subject, subject) = self.subject(
             binding,
             server_id,
@@ -517,7 +540,13 @@ impl ImportJobs {
         let network = worker
             .authorize(server_subject)
             .map_err(|_| JobError::FORBIDDEN)?;
-        network.management().authorize("trusted-worker", crate::identity::Capability::LifecycleStart, None)
+        network
+            .management()
+            .authorize(
+                "trusted-worker",
+                crate::identity::Capability::LifecycleStart,
+                None,
+            )
             .map_err(|_| JobError::FORBIDDEN)?;
         self.ensure_accepting()?;
         network

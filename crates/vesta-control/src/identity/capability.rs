@@ -332,11 +332,19 @@ impl Capability {
 
     /// Authority belongs to the Host when resolving Host-managed identities.
     pub const fn host_scoped(self) -> bool {
-        matches!(self,
-            Self::HostView | Self::HostServersCreate | Self::HostSettingsEdit |
-            Self::HostAccessManage | Self::HostMembershipsManage | Self::HostServersRemove |
-            Self::HostPresetsManage | Self::DevicesRevoke | Self::AccessSourcesManage |
-            Self::OwnerRecovery | Self::AgentInstall
+        matches!(
+            self,
+            Self::HostView
+                | Self::HostServersCreate
+                | Self::HostSettingsEdit
+                | Self::HostAccessManage
+                | Self::HostMembershipsManage
+                | Self::HostServersRemove
+                | Self::HostPresetsManage
+                | Self::DevicesRevoke
+                | Self::AccessSourcesManage
+                | Self::OwnerRecovery
+                | Self::AgentInstall
         )
     }
 

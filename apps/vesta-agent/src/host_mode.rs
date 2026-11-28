@@ -259,14 +259,21 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         let release = supervisor_release.clone();
         router = router.with_configured_worker(entry.server_id, move |id, boot| {
             use vesta_control::machine::{imports::jobs::JobError, startup::StartupMode};
-            let worker_source = worker_source.as_ref().ok_or(JobError("host_worker_config_required"))?;
+            let worker_source = worker_source
+                .as_ref()
+                .ok_or(JobError("host_worker_config_required"))?;
             let config = HostConfiguration::load_file(worker_source, &worker_base)
                 .map_err(|_| JobError("host_worker_config_invalid"))?;
             let remote = if config.supervision() == Supervision::Separate {
-                let mut release = release.lock().map_err(|_| JobError("host_supervisor_unavailable"))?;
+                let mut release = release
+                    .lock()
+                    .map_err(|_| JobError("host_supervisor_unavailable"))?;
                 let attached = crate::supervision::attach(
-                    &config, worker_source, worker_source.parent().unwrap_or(&worker_base),
-                ).map_err(|_| JobError("host_supervisor_unavailable"))?;
+                    &config,
+                    worker_source,
+                    worker_source.parent().unwrap_or(&worker_base),
+                )
+                .map_err(|_| JobError("host_supervisor_unavailable"))?;
                 if release.is_none() {
                     *release = Some(crate::supervision::Release::new(attached.state));
                 }
@@ -275,12 +282,20 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
                 None
             };
             let startup = if boot {
-                state.startup_settings(id)?.map_or(StartupMode::Configured, StartupMode::Managed)
+                state
+                    .startup_settings(id)?
+                    .map_or(StartupMode::Configured, StartupMode::Managed)
             } else {
                 StartupMode::Deferred
             };
-            Worker::open_with_policy(config, clock.clone(), remote, state.worker_policy(id)?, startup)
-                .map_err(|_| JobError("host_worker_unavailable"))
+            Worker::open_with_policy(
+                config,
+                clock.clone(),
+                remote,
+                state.worker_policy(id)?,
+                startup,
+            )
+            .map_err(|_| JobError("host_worker_unavailable"))
         });
     }
     if let Some(jobs) = router.imports() {
@@ -392,9 +407,8 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         router.advance_system_shutdown();
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let mut owners: std::collections::VecDeque<_> = router.take_owned_workers()
-        .into_iter()
-        .collect();
+    let mut owners: std::collections::VecDeque<_> =
+        router.take_owned_workers().into_iter().collect();
     while !owners.is_empty() {
         let count = owners.len();
         for _ in 0..count {
@@ -412,7 +426,11 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
-    if let Some(release) = supervisor_release.lock().expect("supervisor release").take() {
+    if let Some(release) = supervisor_release
+        .lock()
+        .expect("supervisor release")
+        .take()
+    {
         release.finish();
     }
     signals.complete();

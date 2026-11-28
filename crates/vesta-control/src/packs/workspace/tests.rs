@@ -562,20 +562,39 @@ fn cancelled_install_stops_before_staging_or_writing() {
         set_as_modpack: false,
     };
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let cancelled = PackWorkspace::open(&f.db).unwrap().with_cancel(flag.clone());
+    let cancelled = PackWorkspace::open(&f.db)
+        .unwrap()
+        .with_cancel(flag.clone());
     assert!(
         cancelled
-            .install_apply(&f.subject, "1.21.1", Some("vanilla"), "apply", &apply, &files)
+            .install_apply(
+                &f.subject,
+                "1.21.1",
+                Some("vanilla"),
+                "apply",
+                &apply,
+                &files
+            )
             .is_err()
     );
     assert!(!game.join("config/pack.json").exists());
     assert!(f.workspace.server_link(&f.subject).unwrap().is_none());
     flag.store(false, std::sync::atomic::Ordering::Release);
     let result = cancelled
-        .install_apply(&f.subject, "1.21.1", Some("vanilla"), "apply", &apply, &files)
+        .install_apply(
+            &f.subject,
+            "1.21.1",
+            Some("vanilla"),
+            "apply",
+            &apply,
+            &files,
+        )
         .unwrap();
     assert_eq!(result.state, "installed");
-    assert_eq!(std::fs::read(game.join("config/pack.json")).unwrap(), b"pack");
+    assert_eq!(
+        std::fs::read(game.join("config/pack.json")).unwrap(),
+        b"pack"
+    );
 }
 #[test]
 fn draft_is_durable_revisioned_idempotent_and_separate_from_server_files() {

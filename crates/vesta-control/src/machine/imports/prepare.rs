@@ -1,8 +1,9 @@
 //! Local administrative export for a source that the service cannot read.
 use super::{browse, inspection};
 use crate::files::{
+    FileError,
     copied_export::{CopiedExport, CopyLimits},
-    FileError, require_space,
+    require_space,
 };
 use std::{
     collections::BTreeSet,
@@ -98,8 +99,11 @@ fn copy_owned(
         Ok(())
     };
     stopped()?;
-    let snapshot = export.snapshot().map_err(|e| copy_error("inspect the source files", e))?;
-    require_space(target, snapshot.bytes).map_err(|e| copy_error("check space for the prepared copy", e))?;
+    let snapshot = export
+        .snapshot()
+        .map_err(|e| copy_error("inspect the source files", e))?;
+    require_space(target, snapshot.bytes)
+        .map_err(|e| copy_error("check space for the prepared copy", e))?;
     export
         .copy_to_directory_with(
             &snapshot,
@@ -120,10 +124,18 @@ fn copy_owned(
 
 fn copy_error(stage: &str, error: FileError) -> String {
     let detail = match error {
-        FileError::LinkedPath => "The source contains a symbolic link, hard link, or mount point. Prepare a separate folder with regular files and try that folder.",
-        FileError::ProtectedPath => "The source contains a protected configuration, database, key, or certificate. Prepare a separate clean Minecraft folder.",
-        FileError::InvalidPath => "A file name in the source is unsupported. Check the source for names that cannot be copied.",
-        FileError::NotRegular => "The source contains a special file, such as a socket or pipe. Prepare a separate folder with regular files.",
+        FileError::LinkedPath => {
+            "The source contains a symbolic link, hard link, or mount point. Prepare a separate folder with regular files and try that folder."
+        }
+        FileError::ProtectedPath => {
+            "The source contains a protected configuration, database, key, or certificate. Prepare a separate clean Minecraft folder."
+        }
+        FileError::InvalidPath => {
+            "A file name in the source is unsupported. Check the source for names that cannot be copied."
+        }
+        FileError::NotRegular => {
+            "The source contains a special file, such as a socket or pipe. Prepare a separate folder with regular files."
+        }
         FileError::TooLarge => "The source exceeds the import size or file count limit.",
         FileError::InsufficientSpace => {
             "Free space on the filesystem that holds the prepared imports."
@@ -206,20 +218,43 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
-        fs::write(source.path().join("server.properties"), format!("server-port={port}
-")).unwrap();
+        fs::write(
+            source.path().join("server.properties"),
+            format!(
+                "server-port={port}
+"
+            ),
+        )
+        .unwrap();
         // Floodgate keeps its encryption key as plugins/floodgate/key.pem.
         fs::create_dir_all(source.path().join("plugins/floodgate")).unwrap();
-        fs::write(source.path().join("plugins/floodgate/key.pem"), b"floodgate").unwrap();
+        fs::write(
+            source.path().join("plugins/floodgate/key.pem"),
+            b"floodgate",
+        )
+        .unwrap();
         copy(source.path(), target.path(), vec![]).unwrap();
-        assert_eq!(fs::read(target.path().join("plugins/floodgate/key.pem")).unwrap(), b"floodgate");
+        assert_eq!(
+            fs::read(target.path().join("plugins/floodgate/key.pem")).unwrap(),
+            b"floodgate"
+        );
 
         let vesta = tempfile::tempdir().unwrap();
         let empty = tempfile::tempdir().unwrap();
-        fs::write(vesta.path().join("server.properties"), format!("server-port={port}
-")).unwrap();
+        fs::write(
+            vesta.path().join("server.properties"),
+            format!(
+                "server-port={port}
+"
+            ),
+        )
+        .unwrap();
         fs::write(vesta.path().join("key.pem"), b"vesta").unwrap();
-        assert!(copy(vesta.path(), empty.path(), vec![]).unwrap_err().contains("file_path_protected"));
+        assert!(
+            copy(vesta.path(), empty.path(), vec![])
+                .unwrap_err()
+                .contains("file_path_protected")
+        );
     }
 
     #[test]

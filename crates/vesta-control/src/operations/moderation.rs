@@ -106,11 +106,14 @@ pub(super) fn check_whitelist_sync(
     op: &StoredOperation,
     plan: &PreparedOperation,
 ) -> OperationsResult<()> {
-    let pending: Option<(String, String, bool)> = repo.connection().query_row(
-        "SELECT uuid,name,add_entry FROM whitelist_sync_pending WHERE operation_id=?",
-        [op.summary.id.as_str()],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).optional()?;
+    let pending: Option<(String, String, bool)> = repo
+        .connection()
+        .query_row(
+            "SELECT uuid,name,add_entry FROM whitelist_sync_pending WHERE operation_id=?",
+            [op.summary.id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
     let binding_mismatch = || OperationError::rejected(OperationErrorCode::BindingMismatch);
     let Some((uuid, name, add)) = pending else {
         return Err(binding_mismatch());
@@ -120,7 +123,11 @@ pub(super) fn check_whitelist_sync(
     };
     match (action, add) {
         (ModerationAction::WhitelistAdd { player }, true) if *player == name => {
-            let desired = crate::automation_host::desired_whitelist(repo.connection(), repo.server, repo.now)?;
+            let desired = crate::automation_host::desired_whitelist(
+                repo.connection(),
+                repo.server,
+                repo.now,
+            )?;
             if desired.get(&uuid) != Some(&name) {
                 return Err(binding_mismatch());
             }

@@ -1563,7 +1563,9 @@ async fn preview_without_java_pins_exactly_the_planned_artifacts() {
     );
     assert_eq!(
         preview.legacy_checksum,
-        plan.artifacts().iter().any(|a| a.digest.algorithm().legacy())
+        plan.artifacts()
+            .iter()
+            .any(|a| a.digest.algorithm().legacy())
     );
     // A different exact loader pins different artifacts.
     let other = Selection {

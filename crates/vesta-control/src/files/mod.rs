@@ -568,7 +568,11 @@ impl FileBrowser {
         self.read_bounded(subject, path, limit, extra)
     }
 
-    pub fn image_preview(&self, subject: &Subject, path: &RelativePath) -> Result<Option<(Vec<u8>, &'static str)>> {
+    pub fn image_preview(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+    ) -> Result<Option<(Vec<u8>, &'static str)>> {
         let file = self.read_bounded(subject, path, MAX_IMAGE_PREVIEW_BYTES, None)?;
         Ok(image_mime(&file.bytes).map(|mime| (file.bytes, mime)))
     }
@@ -629,7 +633,21 @@ fn image_mime(bytes: &[u8]) -> Option<&'static str> {
         [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', ..] => Some("image/png"),
         [0xff, 0xd8, 0xff, ..] => Some("image/jpeg"),
         [b'G', b'I', b'F', b'8', b'7' | b'9', b'a', ..] => Some("image/gif"),
-        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
+        [
+            b'R',
+            b'I',
+            b'F',
+            b'F',
+            _,
+            _,
+            _,
+            _,
+            b'W',
+            b'E',
+            b'B',
+            b'P',
+            ..,
+        ] => Some("image/webp"),
         _ => None,
     }
 }

@@ -886,7 +886,11 @@ fn back_to_back_creates_get_distinct_resources_and_survive_a_restart() {
     let third = host.create_plan(new_body("Third", None, Some(12 * 1024)));
     assert_eq!(third["review"]["blockers"], json!([]));
     assert_eq!(third["review"]["warnings"], json!(["memory_overcommitted"]));
-    assert_eq!(host.call("GET", "/v1/host/creates/defaults", Value::Null, &host.owner).0, 200);
+    assert_eq!(
+        host.call("GET", "/v1/host/creates/defaults", Value::Null, &host.owner)
+            .0,
+        200
+    );
 
     // Two plans racing for one free port: only the first apply wins.
     let host = host.restart(
@@ -961,13 +965,17 @@ fn running_servers_come_back_after_a_restart_and_stopped_ones_stay_stopped() {
     let (status, policy) = host.call("GET", &startup, Value::Null, &host.owner);
     assert_eq!(status, 200, "{policy}");
     assert_eq!(policy["data"]["on_agent_start"], "restore_previous");
-    let (status, edited) = host.call("PATCH", &startup, json!({
-        "expected_version": policy["data"]["version"],
-        "start_delay_seconds": 2,
-    }), &host.owner);
+    let (status, edited) = host.call(
+        "PATCH",
+        &startup,
+        json!({
+            "expected_version": policy["data"]["version"],
+            "start_delay_seconds": 2,
+        }),
+        &host.owner,
+    );
     assert_eq!(status, 200, "{edited}");
     assert_eq!(edited["data"]["start_delay_seconds"], 2);
-
 
     // The Vesta Server stops: the OS ends its game with it (no lifecycle
     // operation is involved), then the service comes back.
@@ -1146,14 +1154,32 @@ fn real_vanilla_and_fabric_creates_run_together() {
         let software = software_status(&host, &server);
         assert_eq!(software["current"]["software"], kind, "{software}");
         assert_eq!(software["current"]["version"], latest, "{software}");
-        let target = if kind == "vanilla" { "fabric" } else { "vanilla" };
-        let (status, plan) = host.call("POST", &format!("/v1/servers/{server}/manage/software/plan"),
-            json!({"software":target,"version":latest,"build":null,"loader_version":null}), &host.owner);
-        if status != 200 { stop_server(&host, &server, &format!("failed-plan-stop-{i}", i=running.len())); }
+        let target = if kind == "vanilla" {
+            "fabric"
+        } else {
+            "vanilla"
+        };
+        let (status, plan) = host.call(
+            "POST",
+            &format!("/v1/servers/{server}/manage/software/plan"),
+            json!({"software":target,"version":latest,"build":null,"loader_version":null}),
+            &host.owner,
+        );
+        if status != 200 {
+            stop_server(
+                &host,
+                &server,
+                &format!("failed-plan-stop-{i}", i = running.len()),
+            );
+        }
         assert_eq!(status, 200, "{plan}");
-        let plan=if plan["data"].is_object() {&plan["data"]} else {&plan};
-        assert_eq!(plan["software"],target,"{plan}");
-        assert!(plan["plan_id"].is_string(),"{plan}");
+        let plan = if plan["data"].is_object() {
+            &plan["data"]
+        } else {
+            &plan
+        };
+        assert_eq!(plan["software"], target, "{plan}");
+        assert!(plan["plan_id"].is_string(), "{plan}");
         running.push(server);
     }
     // Both online together, on distinct ports.
@@ -1556,9 +1582,7 @@ fn uploaded_packs_are_owner_bound_checked_and_expire() {
     let failed = host.create_wait(
         accepted["jobId"].as_str().unwrap(),
         Duration::from_secs(60),
-        |j| {
-            !matches!(j["state"].as_str(), Some("applying" | "starting"))
-        },
+        |j| !matches!(j["state"].as_str(), Some("applying" | "starting")),
     );
     assert_eq!(failed["state"], "failed", "{failed}");
     assert_eq!(failed["error"], "upload_unavailable");
@@ -1614,12 +1638,20 @@ fn interrupted_create_upload_releases_staging_and_leaves_host_reads_available() 
         assert!(std::time::Instant::now() < until, "upload never staged");
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(reads.request("GET", "/v1/host/discovery", Value::Null, None).0, 200);
+    assert_eq!(
+        reads
+            .request("GET", "/v1/host/discovery", Value::Null, None)
+            .0,
+        200
+    );
     drop(upload);
 
     let until = std::time::Instant::now() + Duration::from_secs(5);
     while std::fs::read_dir(&staged).unwrap().count() != 0 {
-        assert!(std::time::Instant::now() < until, "cancelled upload left an artifact");
+        assert!(
+            std::time::Instant::now() < until,
+            "cancelled upload left an artifact"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(host.upload(&host.owner, "modpack", b"pack").0, 201);
@@ -1640,8 +1672,12 @@ fn create_upload_respects_disk_headroom_and_reports_durable_slot_expiry() {
     let (status, error) = low_disk.upload(&low_disk.owner, "modpack", b"pack");
     assert_eq!(status, 503);
     assert_eq!(error["error"]["code"], "insufficient_space");
-    assert_eq!(std::fs::read_dir(low_disk.temp.path().join("servers/.create-uploads"))
-        .unwrap().count(), 0);
+    assert_eq!(
+        std::fs::read_dir(low_disk.temp.path().join("servers/.create-uploads"))
+            .unwrap()
+            .count(),
+        0
+    );
 
     let host = create_host(Arc::new(FakeInstaller::default()));
     for _ in 0..16 {
@@ -1709,11 +1745,27 @@ fn software_status(host: &Host, server: &str) -> Value {
         &host.owner,
     );
     assert_eq!(status, 200, "{view}");
-    let software = if view["data"].is_object() { view["data"].clone() } else { view };
-    let (status, inventory) = host.call("GET", &format!("/v1/servers/{server}/manage/content"), Value::Null, &host.owner);
+    let software = if view["data"].is_object() {
+        view["data"].clone()
+    } else {
+        view
+    };
+    let (status, inventory) = host.call(
+        "GET",
+        &format!("/v1/servers/{server}/manage/content"),
+        Value::Null,
+        &host.owner,
+    );
     assert_eq!(status, 200, "{inventory}");
-    let inventory = if inventory["data"].is_object() { &inventory["data"] } else { &inventory };
-    assert_eq!(inventory["software"], software["current"]["software"], "{inventory}");
+    let inventory = if inventory["data"].is_object() {
+        &inventory["data"]
+    } else {
+        &inventory
+    };
+    assert_eq!(
+        inventory["software"], software["current"]["software"],
+        "{inventory}"
+    );
     software
 }
 
@@ -1970,13 +2022,9 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
             .map(|c| c.id().to_owned())
             // Server role management remains available through the Host router.
             .filter(|c| {
-                ![
-                    "devices.",
-                    "credentials.",
-                    "security.",
-                ]
-                .iter()
-                .any(|p| c.starts_with(p))
+                !["devices.", "credentials.", "security."]
+                    .iter()
+                    .any(|p| c.starts_with(p))
             })
             .filter(|c| c != "access-sources.manage" || role == BuiltinRole::Owner)
             .collect();
@@ -2014,7 +2062,12 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
     };
     check(&host.owner, BuiltinRole::Owner);
     let storage_path = format!("/v1/servers/{server}/manage/storage");
-    let root = host.router.imports().unwrap().servers_root().join(server.to_string());
+    let root = host
+        .router
+        .imports()
+        .unwrap()
+        .servers_root()
+        .join(server.to_string());
     let folder = root.join("game/world/probe");
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join("marker"), vec![0; 32]).unwrap();
@@ -2023,9 +2076,12 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
     loop {
         let (status, reply) = host.call("GET", &storage_path, Value::Null, &host.owner);
         assert_eq!(status, 200, "{reply}");
-        if reply["data"]["largest"].as_array().unwrap().iter().any(|entry| {
-            entry == &json!({"path":"world/probe","bytes":32})
-        }) {
+        if reply["data"]["largest"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry == &json!({"path":"world/probe","bytes":32}))
+        {
             assert!(reply["data"]["volume"]["totalBytes"].is_number());
             assert!(reply["data"]["largest"].as_array().unwrap().len() <= 10);
             break;
@@ -2033,7 +2089,11 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
         assert!(std::time::Instant::now() < deadline, "{reply}");
         std::thread::sleep(Duration::from_millis(150));
     }
-    assert_eq!(host.call("GET", &storage_path, Value::Null, &host.stranger).0, 404);
+    assert_eq!(
+        host.call("GET", &storage_path, Value::Null, &host.stranger)
+            .0,
+        404
+    );
     // No role on this server: the server does not exist for this caller.
     let (status, _) = host.call("GET", &path, Value::Null, &host.stranger);
     assert_eq!(status, 404);
@@ -2053,7 +2113,15 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
             .unwrap();
         check(&host.stranger, builtin);
         let (status, reply) = host.call("GET", &storage_path, Value::Null, &host.stranger);
-        assert_eq!(status, if role == HostServerRole::Admin { 200 } else { 403 }, "{reply}");
+        assert_eq!(
+            status,
+            if role == HostServerRole::Admin {
+                200
+            } else {
+                403
+            },
+            "{reply}"
+        );
     }
     let previous = host.state.snapshot().unwrap();
     let device = host.state.device(host.devices.1).unwrap().unwrap();
@@ -2175,9 +2243,7 @@ fn restore_lists_detached_backups_and_restores_one_as_a_new_server() {
     let ready = host.create_wait(
         accepted["jobId"].as_str().unwrap(),
         Duration::from_secs(60),
-        |j| {
-            !matches!(j["state"].as_str(), Some("applying" | "starting"))
-        },
+        |j| !matches!(j["state"].as_str(), Some("applying" | "starting")),
     );
     assert_eq!(ready["state"], "ready", "{ready}");
     let live: Uuid = accepted["serverId"].as_str().unwrap().parse().unwrap();
@@ -2365,9 +2431,7 @@ fn restore_of_a_created_server_reinstalls_its_software_and_reaches_online() {
     let ready = host.create_wait(
         accepted["jobId"].as_str().unwrap(),
         Duration::from_secs(60),
-        |j| {
-            !matches!(j["state"].as_str(), Some("applying" | "starting"))
-        },
+        |j| !matches!(j["state"].as_str(), Some("applying" | "starting")),
     );
     assert_eq!(ready["state"], "ready", "{ready}");
     let origin: Uuid = accepted["serverId"].as_str().unwrap().parse().unwrap();
@@ -2485,9 +2549,7 @@ fn corrupted_snapshots_are_refused_before_anything_is_published() {
     let done = host.create_wait(
         accepted["jobId"].as_str().unwrap(),
         Duration::from_secs(60),
-        |j| {
-            !matches!(j["state"].as_str(), Some("applying" | "starting"))
-        },
+        |j| !matches!(j["state"].as_str(), Some("applying" | "starting")),
     );
     assert_eq!(
         (done["state"].clone(), done["error"].clone()),
@@ -2872,49 +2934,161 @@ fn real_loader_less_modrinth_pack_creates_on_vanilla_and_reaches_online() {
 
 #[test]
 fn owners_remove_running_and_stopped_servers_and_replay() {
-    for stop_first in [false,true] {
-        let host=create_host(Arc::new(FakeInstaller::default()));
-        let job=host.create_plan(new_body("Remove me",Some(free_port()),Some(1024)));
-        let id=job["jobId"].as_str().unwrap();
-        let (status,accepted)=host.create_apply(&job,"remove-create",json!({}));assert_eq!(status,202,"{accepted}");
-        let server=accepted["serverId"].as_str().unwrap();
+    for stop_first in [false, true] {
+        let host = create_host(Arc::new(FakeInstaller::default()));
+        let job = host.create_plan(new_body("Remove me", Some(free_port()), Some(1024)));
+        let id = job["jobId"].as_str().unwrap();
+        let (status, accepted) = host.create_apply(&job, "remove-create", json!({}));
+        assert_eq!(status, 202, "{accepted}");
+        let server = accepted["serverId"].as_str().unwrap();
         let ready = host.create_wait(id, Duration::from_secs(120), |j| j["state"] != "applying");
         assert_eq!(ready["state"], "ready", "{ready}");
         assert_eq!(host.job_action(id, "start").0, 202);
         let online = host.create_wait(id, Duration::from_secs(120), |j| j["state"] != "starting");
         assert_eq!(online["state"], "online", "{online}");
         if stop_first {
-            let worker=host.router.owned_handle(server.parse().unwrap()).unwrap();
-            let device=host.state.devices(Actor::LocalRecovery).unwrap().into_iter().find(|d| d.device_id==host.devices.0).unwrap();
-            let subject=subject(&host.router,&worker,&device).ok().expect("owner subject");let network=worker.authorize(subject).unwrap();
-            let generation=network.runtime().game_snapshot().unwrap().generation.unwrap();
-            let actor=vesta_control::identity::Subject {principal:vesta_control::identity::PrincipalId::parse(&device.account_id.to_string()).unwrap(),device:vesta_control::identity::DeviceId::parse(&device.device_id.to_string()).unwrap()};
-            network.runtime().submit_game(&actor,vesta_control::operations::GameCommand::Stop {expected_generation:generation},"remove-pre-stop").unwrap();
-            let until=std::time::Instant::now()+Duration::from_secs(30);
-            while network.runtime().game_snapshot().unwrap().phase!=vesta_control::operations::ProcessPhase::Stopped {assert!(std::time::Instant::now()<until);std::thread::sleep(Duration::from_millis(50));}
+            let worker = host.router.owned_handle(server.parse().unwrap()).unwrap();
+            let device = host
+                .state
+                .devices(Actor::LocalRecovery)
+                .unwrap()
+                .into_iter()
+                .find(|d| d.device_id == host.devices.0)
+                .unwrap();
+            let subject = subject(&host.router, &worker, &device)
+                .ok()
+                .expect("owner subject");
+            let network = worker.authorize(subject).unwrap();
+            let generation = network
+                .runtime()
+                .game_snapshot()
+                .unwrap()
+                .generation
+                .unwrap();
+            let actor = vesta_control::identity::Subject {
+                principal: vesta_control::identity::PrincipalId::parse(
+                    &device.account_id.to_string(),
+                )
+                .unwrap(),
+                device: vesta_control::identity::DeviceId::parse(&device.device_id.to_string())
+                    .unwrap(),
+            };
+            network
+                .runtime()
+                .submit_game(
+                    &actor,
+                    vesta_control::operations::GameCommand::Stop {
+                        expected_generation: generation,
+                    },
+                    "remove-pre-stop",
+                )
+                .unwrap();
+            let until = std::time::Instant::now() + Duration::from_secs(30);
+            while network.runtime().game_snapshot().unwrap().phase
+                != vesta_control::operations::ProcessPhase::Stopped
+            {
+                assert!(std::time::Instant::now() < until);
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
-        let path=format!("/v1/host/servers/{server}");
-        let body=json!({"confirmName":"Remove me","idempotencyKey":Uuid::new_v4()});
-        let (status,missing)=host.call("DELETE",&format!("/v1/host/servers/{}",Uuid::new_v4()),body.clone(),&host.owner);
-        assert_eq!(status,404,"{missing}");assert_eq!(missing["error"]["code"],"not_found");
-        host.state.write(|c| {c.execute("UPDATE machine_import_jobs SET state='applying' WHERE server_id=?",[server])?;Ok(())}).unwrap();
-        let (status,busy)=host.call("DELETE",&path,body.clone(),&host.owner);assert_eq!(status,409,"{busy}");assert_eq!(busy["error"]["code"],"server_busy");
-        host.state.write(|c| {c.execute("UPDATE machine_import_jobs SET state='online' WHERE server_id=?",[server])?;Ok(())}).unwrap();
-        let stranger=host.state.devices(Actor::LocalRecovery).unwrap().into_iter().find(|d| d.device_id==host.devices.1).unwrap();
-        let owner=host.state.snapshot().unwrap().primary_account_id.unwrap();
+        let path = format!("/v1/host/servers/{server}");
+        let body = json!({"confirmName":"Remove me","idempotencyKey":Uuid::new_v4()});
+        let (status, missing) = host.call(
+            "DELETE",
+            &format!("/v1/host/servers/{}", Uuid::new_v4()),
+            body.clone(),
+            &host.owner,
+        );
+        assert_eq!(status, 404, "{missing}");
+        assert_eq!(missing["error"]["code"], "not_found");
+        host.state
+            .write(|c| {
+                c.execute(
+                    "UPDATE machine_import_jobs SET state='applying' WHERE server_id=?",
+                    [server],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let (status, busy) = host.call("DELETE", &path, body.clone(), &host.owner);
+        assert_eq!(status, 409, "{busy}");
+        assert_eq!(busy["error"]["code"], "server_busy");
+        host.state
+            .write(|c| {
+                c.execute(
+                    "UPDATE machine_import_jobs SET state='online' WHERE server_id=?",
+                    [server],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let stranger = host
+            .state
+            .devices(Actor::LocalRecovery)
+            .unwrap()
+            .into_iter()
+            .find(|d| d.device_id == host.devices.1)
+            .unwrap();
+        let owner = host.state.snapshot().unwrap().primary_account_id.unwrap();
         host.router.refresh_server_states();
-        for role in [None,Some(ServerRole::Admin),Some(ServerRole::Moderator),Some(ServerRole::PackUser)] {
-            host.state.set_server_role(Actor::Account(owner),server.parse().unwrap(),stranger.account_id,role,host.state.snapshot().unwrap().revision).unwrap();
-            let (status,reply)=host.call("DELETE",&path,body.clone(),&host.stranger);assert_eq!(status,403,"{reply}");
+        for role in [
+            None,
+            Some(ServerRole::Admin),
+            Some(ServerRole::Moderator),
+            Some(ServerRole::PackUser),
+        ] {
+            host.state
+                .set_server_role(
+                    Actor::Account(owner),
+                    server.parse().unwrap(),
+                    stranger.account_id,
+                    role,
+                    host.state.snapshot().unwrap().revision,
+                )
+                .unwrap();
+            let (status, reply) = host.call("DELETE", &path, body.clone(), &host.stranger);
+            assert_eq!(status, 403, "{reply}");
         }
-        let (status,wrong)=host.call("DELETE",&path,json!({"confirmName":"wrong","idempotencyKey":Uuid::new_v4()}),&host.owner);assert_eq!(status,422,"{wrong}");
-        let (status,removed)=host.call("DELETE",&path,body.clone(),&host.owner);assert_eq!(status,200,"{removed}");
+        let (status, wrong) = host.call(
+            "DELETE",
+            &path,
+            json!({"confirmName":"wrong","idempotencyKey":Uuid::new_v4()}),
+            &host.owner,
+        );
+        assert_eq!(status, 422, "{wrong}");
+        let (status, removed) = host.call("DELETE", &path, body.clone(), &host.owner);
+        assert_eq!(status, 200, "{removed}");
         assert!(host.servers().is_empty());
-        let (status,replay)=host.call("DELETE",&path,body,&host.owner);assert_eq!(status,200,"{replay}");assert_eq!(removed,replay);
-        assert_eq!(host.call("GET",&format!("/v1/servers/{server}/manage/users"),Value::Null,&host.owner).0,404);
-        vesta_control::machine::removed::restore(&host.state,&host.temp.path().join("servers"),server.parse().unwrap()).unwrap();
-        assert_eq!(host.servers().len(),1);
-        assert_eq!(host.call("GET",&format!("/v1/servers/{server}/manage/server/status"),Value::Null,&host.owner).0,200);
+        let (status, replay) = host.call("DELETE", &path, body, &host.owner);
+        assert_eq!(status, 200, "{replay}");
+        assert_eq!(removed, replay);
+        assert_eq!(
+            host.call(
+                "GET",
+                &format!("/v1/servers/{server}/manage/users"),
+                Value::Null,
+                &host.owner
+            )
+            .0,
+            404
+        );
+        vesta_control::machine::removed::restore(
+            &host.state,
+            &host.temp.path().join("servers"),
+            server.parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(host.servers().len(), 1);
+        assert_eq!(
+            host.call(
+                "GET",
+                &format!("/v1/servers/{server}/manage/server/status"),
+                Value::Null,
+                &host.owner
+            )
+            .0,
+            200
+        );
     }
 }
 

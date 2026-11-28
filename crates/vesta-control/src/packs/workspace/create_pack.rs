@@ -169,7 +169,12 @@ pub fn review_create_provider_pack(
     });
     if let Some(id) = document["serverPackFileId"].as_u64().filter(|id| *id > 0) {
         let server = providers
-            .pack_document(Provider::Curseforge, project_id, Some(&id.to_string()), false)
+            .pack_document(
+                Provider::Curseforge,
+                project_id,
+                Some(&id.to_string()),
+                false,
+            )
             .map_err(content_failure)?;
         size = server["fileLength"].as_u64().unwrap_or(size);
     }
@@ -247,7 +252,8 @@ pub fn review_create_uploaded_pack(
                     .all(|f| f["env"]["server"].as_str() == Some("unsupported"))
         })
     };
-    let mods_without_loader = modrinth && manifest.loader == ClientLoader::None && lists_mods(open()?)?;
+    let mods_without_loader =
+        modrinth && manifest.loader == ClientLoader::None && lists_mods(open()?)?;
     Ok(CreatePackReview {
         mods_without_loader,
         ..manifest_review(manifest, client_only, issues, None, source_digest)
@@ -308,8 +314,12 @@ mod tests {
             zip.write_all(body).unwrap();
         }
         if let Some(name) = symlink {
-            zip.add_symlink(name, "/etc/passwd", zip::write::SimpleFileOptions::default())
-                .unwrap();
+            zip.add_symlink(
+                name,
+                "/etc/passwd",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
         }
         let bytes = zip.finish().unwrap().into_inner();
         let mut file = tempfile::NamedTempFile::new().unwrap();
@@ -350,10 +360,17 @@ mod tests {
         assert_eq!(review.source_digest, digest(&bytes));
 
         let client = archive(&[("modrinth.index.json", &index("unsupported"))], None);
-        assert!(review_create_uploaded_pack(client.path()).unwrap().client_only);
+        assert!(
+            review_create_uploaded_pack(client.path())
+                .unwrap()
+                .client_only
+        );
         // Neither a Modrinth nor a CurseForge pack.
         let plain = archive(&[("mods/a.jar", b"x")], None);
-        assert_eq!(review_create_uploaded_pack(plain.path()), Err("pack_invalid"));
+        assert_eq!(
+            review_create_uploaded_pack(plain.path()),
+            Err("pack_invalid")
+        );
     }
 
     #[test]
@@ -376,26 +393,50 @@ mod tests {
             None,
         );
         let review = review_create_uploaded_pack(datapacks.path()).unwrap();
-        assert_eq!((review.loader.as_str(), review.loader_version.as_deref()), ("vanilla", None));
+        assert_eq!(
+            (review.loader.as_str(), review.loader_version.as_deref()),
+            ("vanilla", None)
+        );
         assert!(!review.mods_without_loader);
         // The flag is omitted when false, so earlier reviewed plans keep their hash.
-        assert!(!serde_json::to_string(&review).unwrap().contains("modsWithoutLoader"));
+        assert!(
+            !serde_json::to_string(&review)
+                .unwrap()
+                .contains("modsWithoutLoader")
+        );
         let mods = archive(&[("modrinth.index.json", &index("mods/a.jar"))], None);
-        assert!(review_create_uploaded_pack(mods.path()).unwrap().mods_without_loader);
+        assert!(
+            review_create_uploaded_pack(mods.path())
+                .unwrap()
+                .mods_without_loader
+        );
     }
 
     #[test]
     fn unsafe_upload_archives_are_refused() {
         for name in ["../escape.txt", "/abs.txt", "a/../../b.txt", "a\\b.txt"] {
             let file = archive(&[("modrinth.index.json", b"{}"), (name, b"x")], None);
-            assert_eq!(check_create_upload_archive(file.path()), Err("unsafe_archive"), "{name}");
+            assert_eq!(
+                check_create_upload_archive(file.path()),
+                Err("unsafe_archive"),
+                "{name}"
+            );
         }
         let link = archive(&[("modrinth.index.json", b"{}")], Some("overrides/link"));
-        assert_eq!(check_create_upload_archive(link.path()), Err("unsafe_archive"));
+        assert_eq!(
+            check_create_upload_archive(link.path()),
+            Err("unsafe_archive")
+        );
         let mut junk = tempfile::NamedTempFile::new().unwrap();
         junk.write_all(b"not a zip").unwrap();
-        assert_eq!(check_create_upload_archive(junk.path()), Err("unsafe_archive"));
-        let fine = archive(&[("modrinth.index.json", b"{}"), ("overrides/a.txt", b"xy")], None);
+        assert_eq!(
+            check_create_upload_archive(junk.path()),
+            Err("unsafe_archive")
+        );
+        let fine = archive(
+            &[("modrinth.index.json", b"{}"), ("overrides/a.txt", b"xy")],
+            None,
+        );
         assert_eq!(check_create_upload_archive(fine.path()), Ok(4));
     }
 }

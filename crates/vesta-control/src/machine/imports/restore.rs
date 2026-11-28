@@ -210,10 +210,18 @@ impl ImportJobs {
         let facts = self.server_facts()?;
         let mut out = Vec::new();
         let retained = self.0.servers.with_file_name("retained-backups");
-        let active_entries = fs::read_dir(&self.0.servers).into_iter().flatten().flatten().take(MAX_FOLDERS);
+        let active_entries = fs::read_dir(&self.0.servers)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .take(MAX_FOLDERS);
         let retained_entries = crate::machine::removed::retained_root(&retained)
-            .into_iter().flatten().flatten().take(MAX_FOLDERS);
-        let entries = retained_entries.map(|entry| (entry, true))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .take(MAX_FOLDERS);
+        let entries = retained_entries
+            .map(|entry| (entry, true))
             .chain(active_entries.map(|entry| (entry, false)));
         let mut seen = std::collections::HashSet::new();
         for (entry, is_retained) in entries {
@@ -246,7 +254,11 @@ impl ImportJobs {
             })? {
                 continue;
             }
-            let repository = if is_retained { Some(dir) } else { Self::folder_repository(&dir) };
+            let repository = if is_retained {
+                Some(dir)
+            } else {
+                Self::folder_repository(&dir)
+            };
             let Some(repository) = repository else {
                 continue;
             };
@@ -414,8 +426,12 @@ impl ImportJobs {
             blockers.insert(blocker);
         }
         let software = candidate.as_ref().and_then(|c| c.public.software.clone());
-        let memory = resources::plan_software_memory(self.0.env.memory_total_bytes(), &held, request.memory_mib,
-            software.as_ref().map(|s| s.kind.as_str()));
+        let memory = resources::plan_software_memory(
+            self.0.env.memory_total_bytes(),
+            &held,
+            request.memory_mib,
+            software.as_ref().map(|s| s.kind.as_str()),
+        );
         warnings.extend(memory.warnings.iter().copied());
         if let Some(blocker) = memory.blocker {
             blockers.insert(blocker);

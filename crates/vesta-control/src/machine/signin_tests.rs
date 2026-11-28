@@ -25,7 +25,11 @@ fn fixture() -> Fixture {
     let state = HostState::open(dir.path(), Arc::new(vesta_state::SystemClock)).unwrap();
     let owner = Uuid::new_v4();
     state
-        .claim(owner, "Desk", key(1).public_key().as_ref().try_into().unwrap())
+        .claim(
+            owner,
+            "Desk",
+            key(1).public_key().as_ref().try_into().unwrap(),
+        )
         .unwrap();
     let accounts = HostAccounts::new(state.clone()).unwrap();
     Fixture {
@@ -193,7 +197,10 @@ fn machine_sign_in_server_role_enrolls_and_account_without_role_leaves_no_device
     assert_eq!(f.device_count(), before + 1);
     // An active key of the same account signs in again; another account cannot take it.
     assert!(!f.attempt(&key(4), player, "Phone").2.unwrap().created);
-    assert_eq!(f.attempt(&key(4), f.owner, "Phone").2.err(), Some(KEY_UNUSABLE));
+    assert_eq!(
+        f.attempt(&key(4), f.owner, "Phone").2.err(),
+        Some(KEY_UNUSABLE)
+    );
 }
 
 #[test]
@@ -256,7 +263,7 @@ fn machine_sign_in_approval_mode_requires_link_approval() {
                     name: None,
                     new_device_sign_in: Some(NewDeviceSignIn::Approval),
                     removed_server_retention_days: None,
-                default_on_agent_start: None,
+                    default_on_agent_start: None,
                 }
             )
             .unwrap_err()
@@ -277,7 +284,10 @@ fn machine_sign_in_approval_mode_requires_link_approval() {
         .unwrap();
     assert_eq!(settings.new_device_sign_in, NewDeviceSignIn::Approval);
     assert_eq!(f.audits("new_device_sign_in_change"), 1);
-    assert_eq!(f.attempt(&key(6), f.owner, "Laptop").2.err(), Some(APPROVAL_REQUIRED));
+    assert_eq!(
+        f.attempt(&key(6), f.owner, "Laptop").2.err(),
+        Some(APPROVAL_REQUIRED)
+    );
     assert_eq!(f.device_count(), 1);
     // Already-enrolled keys are unaffected by the mode.
     assert!(!f.attempt(&key(1), f.owner, "Desk").2.unwrap().created);
@@ -328,10 +338,17 @@ fn machine_owners_list_names_and_rename_authorization() {
     let owners = f.state.owners(Actor::Account(second)).unwrap();
     assert_eq!(owners.len(), 2);
     assert_eq!(
-        (owners[0].account_id, owners[0].role, owners[0].name.as_deref()),
+        (
+            owners[0].account_id,
+            owners[0].role,
+            owners[0].name.as_deref()
+        ),
         (f.owner, HostRole::PrimaryOwner, Some("Steve"))
     );
-    assert_eq!((owners[1].role, owners[1].name.as_deref()), (HostRole::Owner, None));
+    assert_eq!(
+        (owners[1].role, owners[1].name.as_deref()),
+        (HostRole::Owner, None)
+    );
 
     let rename = |actor, name: &str| {
         f.state.update_settings(
@@ -346,7 +363,9 @@ fn machine_owners_list_names_and_rename_authorization() {
     };
     assert_eq!(f.state.settings().unwrap().name, None);
     assert_eq!(
-        rename(Actor::Account(Uuid::new_v4()), "Nope").unwrap_err().code(),
+        rename(Actor::Account(Uuid::new_v4()), "Nope")
+            .unwrap_err()
+            .code(),
         "forbidden"
     );
     for bad in ["", " \u{202E} ", &"x".repeat(64)] {
@@ -366,7 +385,10 @@ fn machine_owners_list_names_and_rename_authorization() {
 fn machine_device_names_are_bounded_and_sanitised() {
     assert_eq!(device_name("\u{0007}\u{200B}").as_deref(), None);
     assert_eq!(device_name("a\u{0000}b  c").as_deref(), Some("ab c"));
-    assert_eq!(device_name(&"\u{e9}".repeat(100)).unwrap().chars().count(), 64);
+    assert_eq!(
+        device_name(&"\u{e9}".repeat(100)).unwrap().chars().count(),
+        64
+    );
     assert_eq!(device_name(&"x".repeat(257)), None);
     assert_eq!(machine_name(&"\u{e9}".repeat(31)).unwrap().len(), 62);
     assert_eq!(machine_name(&"\u{e9}".repeat(32)), None);
@@ -374,22 +396,85 @@ fn machine_device_names_are_bounded_and_sanitised() {
 
 #[test]
 fn machine_invite_redeems_only_on_its_server_and_replay_does_not_spend_a_use() {
- use super::invites::*;
- let mut f=fixture(); let mut servers=Vec::new();
- for port in [32001,32002] {let id=Uuid::new_v4();f.state.register_server(Actor::Account(f.owner),&ServerEntry{server_id:id,name:format!("S {port}"),game_port:port,state:ServerState::Stopped,visibility:Visibility::Private},f.state.snapshot().unwrap().revision).unwrap();servers.push(id);}
- let issued=issue(&f.state,Actor::Account(f.owner),servers[0],FP,CreateInvite{role:"moderator".into(),expires_minutes:60,multi_use:false,max_uses:None}).unwrap();
- let invite=issued["invite"].as_str().unwrap();let (_,hash)=binding(invite).unwrap();let key=key(11);let account=Uuid::new_v4();
- let scope=AccountScope{connection_id:Uuid::new_v4(),device_key:B64.encode(key.public_key().as_ref()),purpose:AccountPurpose::Invite,binding:hash.clone()};
- for proof in ["proof1","proof2"] {
-  f.accounts.seed_test_proof(proof,&scope,account);
-  let signature=B64.encode(key.sign(&signed_bytes("vesta.host.invite.v1",&json!({"hostId":f.host(),"serverId":servers[0],"inviteHash":hash,"accountProofId":proof,"deviceKey":scope.device_key}))).as_ref());
-  let request=RedeemInvite{invite:invite.into(),account_proof_id:proof.into(),device_key:scope.device_key.clone(),device_name:"Guest".into(),signature};
-  redeem(&f.state,&mut f.accounts,&scope,FP,&request).unwrap();
- }
- assert_eq!(f.state.effective_role(account,servers[0]).unwrap(),Some(super::owners::EffectiveRole::Server(ServerRole::Moderator)));
- assert_eq!(f.state.effective_role(account,servers[1]).unwrap(),None);
- assert!(f.state.host_role(account).unwrap().is_none());
- revoke(&f.state,Actor::Account(f.owner),servers[1],Uuid::parse_str(issued["id"].as_str().unwrap()).unwrap()).unwrap_err();
- revoke(&f.state,Actor::Account(f.owner),servers[0],Uuid::parse_str(issued["id"].as_str().unwrap()).unwrap()).unwrap();
- assert!(list(&f.state,Actor::Account(f.owner),servers[0]).unwrap()["invitations"].as_array().unwrap().is_empty());
+    use super::invites::*;
+    let mut f = fixture();
+    let mut servers = Vec::new();
+    for port in [32001, 32002] {
+        let id = Uuid::new_v4();
+        f.state
+            .register_server(
+                Actor::Account(f.owner),
+                &ServerEntry {
+                    server_id: id,
+                    name: format!("S {port}"),
+                    game_port: port,
+                    state: ServerState::Stopped,
+                    visibility: Visibility::Private,
+                },
+                f.state.snapshot().unwrap().revision,
+            )
+            .unwrap();
+        servers.push(id);
+    }
+    let issued = issue(
+        &f.state,
+        Actor::Account(f.owner),
+        servers[0],
+        FP,
+        CreateInvite {
+            role: "moderator".into(),
+            expires_minutes: 60,
+            multi_use: false,
+            max_uses: None,
+        },
+    )
+    .unwrap();
+    let invite = issued["invite"].as_str().unwrap();
+    let (_, hash) = binding(invite).unwrap();
+    let key = key(11);
+    let account = Uuid::new_v4();
+    let scope = AccountScope {
+        connection_id: Uuid::new_v4(),
+        device_key: B64.encode(key.public_key().as_ref()),
+        purpose: AccountPurpose::Invite,
+        binding: hash.clone(),
+    };
+    for proof in ["proof1", "proof2"] {
+        f.accounts.seed_test_proof(proof, &scope, account);
+        let signature=B64.encode(key.sign(&signed_bytes("vesta.host.invite.v1",&json!({"hostId":f.host(),"serverId":servers[0],"inviteHash":hash,"accountProofId":proof,"deviceKey":scope.device_key}))).as_ref());
+        let request = RedeemInvite {
+            invite: invite.into(),
+            account_proof_id: proof.into(),
+            device_key: scope.device_key.clone(),
+            device_name: "Guest".into(),
+            signature,
+        };
+        redeem(&f.state, &mut f.accounts, &scope, FP, &request).unwrap();
+    }
+    assert_eq!(
+        f.state.effective_role(account, servers[0]).unwrap(),
+        Some(super::owners::EffectiveRole::Server(ServerRole::Moderator))
+    );
+    assert_eq!(f.state.effective_role(account, servers[1]).unwrap(), None);
+    assert!(f.state.host_role(account).unwrap().is_none());
+    revoke(
+        &f.state,
+        Actor::Account(f.owner),
+        servers[1],
+        Uuid::parse_str(issued["id"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap_err();
+    revoke(
+        &f.state,
+        Actor::Account(f.owner),
+        servers[0],
+        Uuid::parse_str(issued["id"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        list(&f.state, Actor::Account(f.owner), servers[0]).unwrap()["invitations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }

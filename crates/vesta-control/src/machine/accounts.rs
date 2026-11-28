@@ -229,7 +229,10 @@ impl HostAccounts {
         self.pending
             .get(challenge_id)
             .filter(|p| {
-                matches!(p.scope.purpose, AccountPurpose::Signin | AccountPurpose::Invite) && p.deadline.live(self.state.now_ms())
+                matches!(
+                    p.scope.purpose,
+                    AccountPurpose::Signin | AccountPurpose::Invite
+                ) && p.deadline.live(self.state.now_ms())
             })
             .map(|p| p.scope.clone())
     }
@@ -306,10 +309,19 @@ mod tests {
     }
 }
 
-#[cfg(feature="test-support")]
+#[cfg(feature = "test-support")]
 impl HostAccounts {
-    pub fn test_profile(state:HostState,account:Uuid,name:&str)->Self {
-        let verifier=MinecraftChallenges::test_profile(ServerUuid::from_uuid(state.snapshot().unwrap().host_id).unwrap(),MinecraftUuid::from_uuid(account).unwrap(),MinecraftName::parse(name).unwrap());
-        Self{state,verifier,pending:HashMap::new(),proofs:HashMap::new()}
+    pub fn test_profile(state: HostState, account: Uuid, name: &str) -> Self {
+        let verifier = MinecraftChallenges::test_profile(
+            ServerUuid::from_uuid(state.snapshot().unwrap().host_id).unwrap(),
+            MinecraftUuid::from_uuid(account).unwrap(),
+            MinecraftName::parse(name).unwrap(),
+        );
+        Self {
+            state,
+            verifier,
+            pending: HashMap::new(),
+            proofs: HashMap::new(),
+        }
     }
 }

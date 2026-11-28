@@ -223,7 +223,11 @@ pub fn inspect(
     if processes.iter().any(|p| p.relation == "amp_controller") {
         warnings.insert("amp_controller_running");
     }
-    if let Some(code) = stopped_evidence(&opened.path, report.server.game_port, &request.managed_ports) {
+    if let Some(code) = stopped_evidence(
+        &opened.path,
+        report.server.game_port,
+        &request.managed_ports,
+    ) {
         blockers.insert(code);
     }
     let source_pids: BTreeSet<u32> = processes
@@ -1219,12 +1223,13 @@ pub(crate) fn stopped_evidence(
     let port = port.unwrap_or(25565);
     if !managed.contains(&port)
         && addresses.into_iter().any(|ip| {
-        std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::new(ip, port),
-            std::time::Duration::from_millis(100),
-        )
-        .is_ok()
-    }) {
+            std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::new(ip, port),
+                std::time::Duration::from_millis(100),
+            )
+            .is_ok()
+        })
+    {
         return Some("source_port_listening");
     }
     let world = properties
@@ -1290,7 +1295,10 @@ mod stopped_tests {
             Some("source_port_listening")
         );
         drop(listener);
-        assert_eq!(stopped_evidence(dir.path(), Some(port), &BTreeSet::new()), None);
+        assert_eq!(
+            stopped_evidence(dir.path(), Some(port), &BTreeSet::new()),
+            None
+        );
         fs::create_dir_all(dir.path().join("world/region")).unwrap();
         fs::write(dir.path().join("world/region/r.0.0.mca"), b"world").unwrap();
         assert_eq!(

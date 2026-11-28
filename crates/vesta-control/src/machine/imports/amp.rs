@@ -134,7 +134,13 @@ pub fn candidates(
         let Ok(root) = browser.root(&listed.config.root_id) else {
             continue;
         };
-        if !state.tree(&root, Vec::new(), MAX_SCAN_DEPTH, &mut budget, "import_root")? {
+        if !state.tree(
+            &root,
+            Vec::new(),
+            MAX_SCAN_DEPTH,
+            &mut budget,
+            "import_root",
+        )? {
             state.out.warnings.push(ImportWarning {
                 code: "scan_truncated",
                 display_path: display(&root.canonical),
@@ -151,8 +157,13 @@ pub fn candidates(
             continue;
         };
         let mut budget = COMMON_VISITS;
-        if !state.tree(&root, parts, COMMON_SCAN_DEPTH, &mut budget, "common_location")?
-            && state.out.candidates.len() >= MAX_CANDIDATES
+        if !state.tree(
+            &root,
+            parts,
+            COMMON_SCAN_DEPTH,
+            &mut budget,
+            "common_location",
+        )? && state.out.candidates.len() >= MAX_CANDIDATES
         {
             break;
         }
@@ -185,7 +196,8 @@ impl Scan<'_> {
                 Err(ImportError::Unreadable) => {
                     // Below the starting folder, a name that says "minecraft"
                     // identifies a likely server folder worth asking about.
-                    if parts.len() > base && (likely_by_name(&path) || amp_instance(&path).is_some())
+                    if parts.len() > base
+                        && (likely_by_name(&path) || amp_instance(&path).is_some())
                     {
                         self.push(root, Some(parts), &path, None, source)?;
                     }
@@ -204,7 +216,8 @@ impl Scan<'_> {
                 continue;
             }
             for dir in listing.dirs.iter().rev() {
-                if (dir.starts_with('.') && dir != ".ampdata") || SKIPPED_NAMES.contains(&dir.as_str())
+                if (dir.starts_with('.') && dir != ".ampdata")
+                    || SKIPPED_NAMES.contains(&dir.as_str())
                 {
                     continue;
                 }
@@ -235,8 +248,12 @@ impl Scan<'_> {
             }
         }
         if let Some(ampdata) = datastore.parent() {
-            for path in instances_json(self.browser, saved, &ampdata.join("instances.json"), datastore)
-            {
+            for path in instances_json(
+                self.browser,
+                saved,
+                &ampdata.join("instances.json"),
+                datastore,
+            ) {
                 if !instances.contains(&path) {
                     instances.push(path);
                 }
@@ -259,7 +276,10 @@ impl Scan<'_> {
                         if evidence.iter().any(|e| {
                             matches!(
                                 *e,
-                                "server_properties" | "world_directory" | "server_jar" | "loader_markers"
+                                "server_properties"
+                                    | "world_directory"
+                                    | "server_jar"
+                                    | "loader_markers"
                             )
                         }) {
                             self.push(&root, Some(parts), &path, Some(evidence), "server_manager")?;

@@ -47,7 +47,10 @@ fn original_v11_upgrades_access_defaults_without_weakening_builtin_protection() 
 
 #[test]
 fn legacy_whitelist_toggle_migrates_to_the_owner_role() {
-    for (enabled, expected) in [(true, serde_json::json!(["*"])), (false, serde_json::json!([]))] {
+    for (enabled, expected) in [
+        (true, serde_json::json!(["*"])),
+        (false, serde_json::json!([])),
+    ] {
         let f = Fixture::open();
         let directory = f.db.directory().clone();
         f.db.write(|c| {
@@ -61,13 +64,18 @@ fn legacy_whitelist_toggle_migrates_to_the_owner_role() {
         }).unwrap();
         f.db.close().unwrap();
         let upgraded = StateDatabase::open(directory, f.clock.clone()).unwrap();
-        upgraded.read(|c| {
-            let settings: String = c.query_row("SELECT settings_json FROM access_role_sources", [], |r| r.get(0))?;
-            let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
-            assert_eq!(settings["auto_whitelist_roles"], expected);
-            assert!(settings.get("sync_whitelist").is_none());
-            Ok(())
-        }).unwrap();
+        upgraded
+            .read(|c| {
+                let settings: String =
+                    c.query_row("SELECT settings_json FROM access_role_sources", [], |r| {
+                        r.get(0)
+                    })?;
+                let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
+                assert_eq!(settings["auto_whitelist_roles"], expected);
+                assert!(settings.get("sync_whitelist").is_none());
+                Ok(())
+            })
+            .unwrap();
         upgraded.close().unwrap();
     }
 }

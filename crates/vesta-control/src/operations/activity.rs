@@ -27,7 +27,10 @@ pub(super) fn actor(
     source: &str,
 ) -> OperationsResult<ActivityActor> {
     if source == super::WHITELIST_SYNC_SOURCE {
-        return Ok(ActivityActor::Automation { kind: "system", name: "Vesta Server" });
+        return Ok(ActivityActor::Automation {
+            kind: "system",
+            name: "Vesta Server",
+        });
     }
     let projected = c.query_row(
         "SELECT display_name,device_name FROM worker_activity_identities WHERE account_id=? AND device_id=?",

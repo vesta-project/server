@@ -149,7 +149,11 @@ impl AutomationDriver {
         automation: Arc<Automation>,
         runtime: Arc<std::sync::OnceLock<crate::operations::RuntimeHandle>>,
         backup_events: mpsc::Receiver<BackupEvent>,
-        startup: (Option<crate::config::OnAgentStart>, crate::sleep::Sleep, crate::machine::startup::StartupMode),
+        startup: (
+            Option<crate::config::OnAgentStart>,
+            crate::sleep::Sleep,
+            crate::machine::startup::StartupMode,
+        ),
         actions: Arc<HostActions>,
         telemetry: DriverTelemetry,
     ) -> Result<Self, HostError> {
@@ -427,7 +431,11 @@ impl Host {
         let db = StateDatabase::open(checked.state, clock).map_err(HostError::State)?;
         if let Some((host, server, policy)) = worker {
             let initialized = crate::identity::worker_policy::initialize(&db, host, server)
-                .and_then(|()| policy.map_or(Ok(()), |policy| crate::identity::worker_policy::sync(&db, &policy)));
+                .and_then(|()| {
+                    policy.map_or(Ok(()), |policy| {
+                        crate::identity::worker_policy::sync(&db, &policy)
+                    })
+                });
             if initialized.is_err() {
                 let _ = db.close();
                 return Err(HostError::Supervisor("worker_policy_unavailable"));
@@ -736,11 +744,13 @@ fn compose(
     let files =
         FileBrowser::open(db.clone(), config.game(), &protected).map_err(HostError::Files)?;
     let identity = IdentityService::new(db.clone()).map_err(HostError::Identity)?;
-    let management = ManagementAccess::new(db.clone()).map_err(|_| {
-        HostError::Identity(crate::ControlError::State(vesta_state::StateError::new(
-            "management_unavailable",
-        )))
-    })?.with_icon_game(files.server_icon_root().map_err(HostError::Files)?);
+    let management = ManagementAccess::new(db.clone())
+        .map_err(|_| {
+            HostError::Identity(crate::ControlError::State(vesta_state::StateError::new(
+                "management_unavailable",
+            )))
+        })?
+        .with_icon_game(files.server_icon_root().map_err(HostError::Files)?);
     let passwords = match config.pack_access() {
         PackAccessMode::Minecraft => None,
         PackAccessMode::MinecraftOrPassword => {
@@ -889,12 +899,18 @@ fn compose(
     let automation =
         Arc::new(Automation::new(db.clone(), actions.clone()).map_err(HostError::Identity)?);
     // Recover the disabled interval before any startup event or schedule can run.
-    automation.resume_after_disable().map_err(HostError::Identity)?;
+    automation
+        .resume_after_disable()
+        .map_err(HostError::Identity)?;
     let driver = AutomationDriver::start(
         automation.clone(),
         cell.clone(),
         backup_events,
-        (config.on_agent_start_explicit(), sleep.clone(), startup_mode),
+        (
+            config.on_agent_start_explicit(),
+            sleep.clone(),
+            startup_mode,
+        ),
         actions,
         DriverTelemetry {
             game_directory: config.game().to_path_buf(),

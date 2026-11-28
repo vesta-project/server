@@ -155,7 +155,10 @@ fn detects_vanilla_paper_fabric_forge_and_neoforge_layouts() {
     write(amp.join("minecraft_server.jar"), "");
     write(amp.join("bukkit.yml"), "");
     write(amp.join("config/paper-global.yml"), "");
-    write(amp.join("version_history.json"), "{\"currentVersion\":\"git-Paper-1 (MC: 1.21.1)\"}");
+    write(
+        amp.join("version_history.json"),
+        "{\"currentVersion\":\"git-Paper-1 (MC: 1.21.1)\"}",
+    );
     fs::create_dir_all(amp.join("plugins")).unwrap();
     let fabric = base.join("fabric");
     write(fabric.join("server.properties"), "");
@@ -216,8 +219,14 @@ fn detects_vanilla_paper_fabric_forge_and_neoforge_layouts() {
 
     let report = inspect(&b, "amp-paper");
     assert_eq!(report.detected.loader, Some(Loader::Paper));
-    assert_eq!(report.detected.launch.unwrap().relative_path, "paperclip.jar");
-    assert_eq!(report.detected.launch_candidates, ["minecraft_server.jar", "paperclip.jar"]);
+    assert_eq!(
+        report.detected.launch.unwrap().relative_path,
+        "paperclip.jar"
+    );
+    assert_eq!(
+        report.detected.launch_candidates,
+        ["minecraft_server.jar", "paperclip.jar"]
+    );
 
     let report = inspect(&b, "fabric");
     assert_eq!(report.detected.loader, Some(Loader::Fabric));
@@ -1043,19 +1052,36 @@ fn vanilla_server_jar_reports_its_embedded_version() {
         (
             "modern",
             vec![
-                ("version.json", br#"{"id":"1.21.1","name":"1.21.1","world_version":3955}"#),
-                ("META-INF/versions.list", b"abc\t1.21.1\t1.21.1/server-1.21.1.jar\n"),
+                (
+                    "version.json",
+                    br#"{"id":"1.21.1","name":"1.21.1","world_version":3955}"#,
+                ),
+                (
+                    "META-INF/versions.list",
+                    b"abc\t1.21.1\t1.21.1/server-1.21.1.jar\n",
+                ),
             ],
             Some("1.21.1"),
         ),
         (
             "bundler",
-            vec![("META-INF/versions.list", b"abc\t1.20.4\t1.20.4/server-1.20.4.jar\n")],
+            vec![(
+                "META-INF/versions.list",
+                b"abc\t1.20.4\t1.20.4/server-1.20.4.jar\n",
+            )],
             Some("1.20.4"),
         ),
-        ("snapshot", vec![("version.json", br#"{"id":"24w14a"}"#)], Some("24w14a")),
+        (
+            "snapshot",
+            vec![("version.json", br#"{"id":"24w14a"}"#)],
+            Some("24w14a"),
+        ),
         // Unsafe or missing ids say nothing.
-        ("hostile", vec![("version.json", br#"{"id":"../../etc"}"#)], None),
+        (
+            "hostile",
+            vec![("version.json", br#"{"id":"../../etc"}"#)],
+            None,
+        ),
         ("bare", vec![("net/minecraft/Main.class", b"x")], None),
     ];
     for (name, entries, _) in &cases {
@@ -1071,7 +1097,11 @@ fn vanilla_server_jar_reports_its_embedded_version() {
     for (name, _, expected) in &cases {
         let report = inspect(&b, name);
         assert_eq!(report.detected.loader, Some(Loader::Vanilla), "{name}");
-        assert_eq!(report.detected.minecraft_version.as_deref(), *expected, "{name}");
+        assert_eq!(
+            report.detected.minecraft_version.as_deref(),
+            *expected,
+            "{name}"
+        );
         assert_eq!(
             report.blockers.contains(&"software_unresolved"),
             expected.is_none(),

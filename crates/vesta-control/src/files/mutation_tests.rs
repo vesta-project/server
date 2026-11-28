@@ -2682,24 +2682,46 @@ fn cleanup_previews_and_clears_only_unowned_log_archives_and_trash() {
     f.put("logs/latest.log", b"live");
     f.put("world/2000-01-01-1.log.gz", b"world");
     f.put("config/old.json", b"trash");
-    f.files.delete(&f.owner, &Fixture::path("config/old.json"), &sha(b"trash")).unwrap();
+    f.files
+        .delete(&f.owner, &Fixture::path("config/old.json"), &sha(b"trash"))
+        .unwrap();
     f.put("config/old.json", b"active config");
 
-    let logs = || CleanupFiles::Logs { cutoff: SystemTime::now() + Duration::from_secs(2) };
-    assert_eq!(f.files.cleanup_files(logs(), false, || false).unwrap(), None);
-    assert_eq!(f.files.cleanup_files(logs(), true, || true).unwrap(), Some(3));
+    let logs = || CleanupFiles::Logs {
+        cutoff: SystemTime::now() + Duration::from_secs(2),
+    };
+    assert_eq!(
+        f.files.cleanup_files(logs(), false, || false).unwrap(),
+        None
+    );
+    assert_eq!(
+        f.files.cleanup_files(logs(), true, || true).unwrap(),
+        Some(3)
+    );
     assert_eq!(f.get("logs/2000-01-01-1.log.gz").unwrap(), b"old");
-    assert_eq!(f.files.cleanup_files(logs(), false, || true).unwrap(), Some(3));
+    assert_eq!(
+        f.files.cleanup_files(logs(), false, || true).unwrap(),
+        Some(3)
+    );
     assert!(f.get("logs/2000-01-01-1.log.gz").is_none());
     assert_eq!(f.get("logs/latest.log").unwrap(), b"live");
     assert_eq!(f.get("world/2000-01-01-1.log.gz").unwrap(), b"world");
-    assert_eq!(f.files.cleanup_files(CleanupFiles::Trash, true, || true).unwrap(), Some(5));
+    assert_eq!(
+        f.files
+            .cleanup_files(CleanupFiles::Trash, true, || true)
+            .unwrap(),
+        Some(5)
+    );
     assert_eq!(f.trash_rows(), 1);
-    assert_eq!(f.files.cleanup_files(CleanupFiles::Trash, false, || true).unwrap(), Some(5));
+    assert_eq!(
+        f.files
+            .cleanup_files(CleanupFiles::Trash, false, || true)
+            .unwrap(),
+        Some(5)
+    );
     assert_eq!((f.trash_rows(), f.trash_files()), (0, 0));
     assert_eq!(f.get("config/old.json").unwrap(), b"active config");
 }
-
 
 #[test]
 fn bulk_delete_moves_tree_and_files_to_one_restorable_batch() {
@@ -2710,21 +2732,45 @@ fn bulk_delete_moves_tree_and_files_to_one_restorable_batch() {
     f.put("config/nested/value.json", b"inside");
     f.put("config/other.json", b"outside");
     let items = [
-        BulkDeleteItem { path: "config/nested".into(), expected_sha256: None, recursive: true },
-        BulkDeleteItem { path: "config/missing.json".into(), expected_sha256: Some(sha(b"missing")), recursive: false },
-        BulkDeleteItem { path: "config/other.json".into(), expected_sha256: Some(sha(b"outside")), recursive: false },
+        BulkDeleteItem {
+            path: "config/nested".into(),
+            expected_sha256: None,
+            recursive: true,
+        },
+        BulkDeleteItem {
+            path: "config/missing.json".into(),
+            expected_sha256: Some(sha(b"missing")),
+            recursive: false,
+        },
+        BulkDeleteItem {
+            path: "config/other.json".into(),
+            expected_sha256: Some(sha(b"outside")),
+            recursive: false,
+        },
     ];
     let key = "bulk-delete-batch-fixture";
     let batch = f.files.delete_remote_batch(&f.owner, key, &items).unwrap();
     assert!(!f.game.join("config/nested").exists());
     assert!(f.get("config/other.json").is_none());
     assert_eq!(batch["results"][1]["error_code"], "file_not_found");
-    assert_eq!(f.files.delete_remote_batch(&f.owner, key, &items).unwrap(), batch);
+    assert_eq!(
+        f.files.delete_remote_batch(&f.owner, key, &items).unwrap(),
+        batch
+    );
     let rows = f.files.trash_entries(&f.owner).unwrap();
     assert_eq!(rows.len(), 2);
-    assert!(rows.iter().all(|row| row.batch_id.as_deref() == batch["batch_id"].as_str()));
+    assert!(
+        rows.iter()
+            .all(|row| row.batch_id.as_deref() == batch["batch_id"].as_str())
+    );
     let folder = batch["results"][0]["trash_id"].as_str().unwrap();
-    f.files.mutate_remote(&f.owner, "restore-bulk-folder", RemoteFileMutation::Restore { id: folder }).unwrap();
+    f.files
+        .mutate_remote(
+            &f.owner,
+            "restore-bulk-folder",
+            RemoteFileMutation::Restore { id: folder },
+        )
+        .unwrap();
     assert_eq!(f.get("config/nested/value.json").unwrap(), b"inside");
     assert!(f.game.join("config/nested/empty").is_dir());
 }
@@ -2735,9 +2781,18 @@ fn bulk_delete_refuses_protected_descendants_without_moving_parent() {
 
     let f = Fixture::open();
     f.put("config/server.properties", b"protected");
-    let result = f.files.delete_remote_batch(&f.owner, "protected-subtree-fixture", &[
-        BulkDeleteItem { path: "config".into(), expected_sha256: None, recursive: true }
-    ]).unwrap();
+    let result = f
+        .files
+        .delete_remote_batch(
+            &f.owner,
+            "protected-subtree-fixture",
+            &[BulkDeleteItem {
+                path: "config".into(),
+                expected_sha256: None,
+                recursive: true,
+            }],
+        )
+        .unwrap();
     assert_eq!(result["results"][0]["error_code"], "file_path_protected");
     assert_eq!(f.get("config/server.properties").unwrap(), b"protected");
     assert_eq!(f.trash_rows(), 0);
@@ -2763,7 +2818,11 @@ fn req_non_empty_folder_moves_to_trash_and_restores_whole() {
     f.put("plugins/Essentials/userdata/a.yml", b"a");
     let result = f
         .files
-        .delete_remote_batch(&f.owner, "req-folder", &[bulk("plugins/Essentials", None, true)])
+        .delete_remote_batch(
+            &f.owner,
+            "req-folder",
+            &[bulk("plugins/Essentials", None, true)],
+        )
         .unwrap();
     assert!(result["results"][0]["error_code"].is_null());
     assert!(!f.game.join("plugins/Essentials").exists());
@@ -2772,7 +2831,11 @@ fn req_non_empty_folder_moves_to_trash_and_restores_whole() {
     assert_eq!(rows.len(), 1);
     let id = result["results"][0]["trash_id"].as_str().unwrap();
     f.files
-        .mutate_remote(&f.owner, "req-folder-restore", RemoteFileMutation::Restore { id })
+        .mutate_remote(
+            &f.owner,
+            "req-folder-restore",
+            RemoteFileMutation::Restore { id },
+        )
         .unwrap();
     assert_eq!(f.get("plugins/Essentials/config.yml").unwrap(), b"cfg");
     assert_eq!(f.get("plugins/Essentials/userdata/a.yml").unwrap(), b"a");
@@ -2789,16 +2852,26 @@ fn req_bulk_delete_reports_each_item_in_order() {
     f.put("logs/b.log", b"b");
     let result = f
         .files
-        .delete_remote_batch(&f.owner, "req-bulk", &[
-            bulk("logs/a.log", Some(b"a"), false),
-            bulk("logs/b.log", Some(b"stale"), false),
-            bulk("logs/old", None, true),
-            bulk("logs/a.log", Some(b"a"), false),
-        ])
+        .delete_remote_batch(
+            &f.owner,
+            "req-bulk",
+            &[
+                bulk("logs/a.log", Some(b"a"), false),
+                bulk("logs/b.log", Some(b"stale"), false),
+                bulk("logs/old", None, true),
+                bulk("logs/a.log", Some(b"a"), false),
+            ],
+        )
         .unwrap();
     let results = result["results"].as_array().unwrap();
-    let paths: Vec<_> = results.iter().map(|r| r["path"].as_str().unwrap()).collect();
-    assert_eq!(paths, ["logs/a.log", "logs/b.log", "logs/old", "logs/a.log"]);
+    let paths: Vec<_> = results
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        ["logs/a.log", "logs/b.log", "logs/old", "logs/a.log"]
+    );
     assert!(results[0]["error_code"].is_null());
     assert!(!results[1]["error_code"].is_null());
     assert!(results[2]["error_code"].is_null());
@@ -2812,22 +2885,34 @@ fn req_bulk_delete_reports_each_item_in_order() {
 #[test]
 fn req_bulk_delete_validates_bounds_and_kinds() {
     let f = Fixture::open();
-    refused(f.files.delete_remote_batch(&f.owner, "req-empty", &[]), "file_limit_invalid");
-    let many: Vec<_> = (0..101).map(|i| bulk(&format!("x{i}.txt"), Some(b"x"), false)).collect();
-    refused(f.files.delete_remote_batch(&f.owner, "req-many", &many), "file_limit_invalid");
+    refused(
+        f.files.delete_remote_batch(&f.owner, "req-empty", &[]),
+        "file_limit_invalid",
+    );
+    let many: Vec<_> = (0..101)
+        .map(|i| bulk(&format!("x{i}.txt"), Some(b"x"), false))
+        .collect();
+    refused(
+        f.files.delete_remote_batch(&f.owner, "req-many", &many),
+        "file_limit_invalid",
+    );
 
     fs::create_dir_all(f.game.join("world/data")).unwrap();
     f.put("world/data/x.dat", b"x");
     f.put("notes.txt", b"n");
     let result = f
         .files
-        .delete_remote_batch(&f.owner, "req-kinds", &[
-            bulk("world/data", Some(b""), false),
-            bulk("notes.txt", None, true),
-            bulk("notes.txt", None, false),
-            bulk("", None, true),
-            bulk("../outside", None, true),
-        ])
+        .delete_remote_batch(
+            &f.owner,
+            "req-kinds",
+            &[
+                bulk("world/data", Some(b""), false),
+                bulk("notes.txt", None, true),
+                bulk("notes.txt", None, false),
+                bulk("", None, true),
+                bulk("../outside", None, true),
+            ],
+        )
         .unwrap();
     for row in result["results"].as_array().unwrap() {
         assert!(!row["error_code"].is_null(), "{row}");
@@ -2846,7 +2931,8 @@ fn req_folder_delete_needs_delete_rights_on_everything_inside() {
     f.put("config/mod/a.toml", b"a");
     let helper = seed(&f.db, false);
     refused(
-        f.files.delete_remote_batch(&helper, "req-perm-none", &[bulk("config/mod", None, true)]),
+        f.files
+            .delete_remote_batch(&helper, "req-perm-none", &[bulk("config/mod", None, true)]),
         "forbidden",
     );
     f.grant(&helper, Capability::FilesDelete, "config/other/**");

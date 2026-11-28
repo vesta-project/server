@@ -77,7 +77,9 @@ impl PendingApplication {
         let decision = self
             .limiter
             .lock()
-            .map_or(AdmissionDecision::ClockUnavailable, |mut l| l.try_acquire(peer.ip()));
+            .map_or(AdmissionDecision::ClockUnavailable, |mut l| {
+                l.try_acquire(peer.ip())
+            });
         match decision {
             AdmissionDecision::Allowed => {}
             AdmissionDecision::RateLimited { retry_after } => {

@@ -1569,17 +1569,21 @@ fn newest_run_pages_use_time_and_id_ties_without_skipping() {
     );
 }
 
-
 #[test]
 fn backup_failure_outbox_creates_one_run_with_the_reason() {
     let f = Fixture::new();
     let workflow = f.create(definition(
-        Trigger::BackupFailed { profile: Some("daily".into()) },
-        vec![step("notify", Action::Notify {
-            severity: Severity::Warning,
-            title: "Backup failed".into(),
-            body: "{{backup_error_code}}".into(),
-        })],
+        Trigger::BackupFailed {
+            profile: Some("daily".into()),
+        },
+        vec![step(
+            "notify",
+            Action::Notify {
+                severity: Severity::Warning,
+                title: "Backup failed".into(),
+                body: "{{backup_error_code}}".into(),
+            },
+        )],
     ));
     f.db.write(|c| {
         c.execute_batch("CREATE TABLE backup_failure_events(job TEXT PRIMARY KEY,profile TEXT,error_code TEXT);
@@ -1589,16 +1593,24 @@ fn backup_failure_outbox_creates_one_run_with_the_reason() {
     }).unwrap();
     f.automation.consume_backup_failures().unwrap();
     f.automation.consume_backup_failures().unwrap();
-    let runs = f.automation.list_runs(&f.owner, Some(&workflow.id), None, 10).unwrap();
+    let runs = f
+        .automation
+        .list_runs(&f.owner, Some(&workflow.id), None, 10)
+        .unwrap();
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].trigger["event"]["error_code"], "backup_snapshot_size_limit_reached");
+    assert_eq!(
+        runs[0].trigger["event"]["error_code"],
+        "backup_snapshot_size_limit_reached"
+    );
 }
-
 
 #[test]
 fn disabled_schedules_skip_the_interval_and_pending_runs() {
     let f = Fixture::new();
-    let mut schedule = definition(Trigger::Interval { seconds: 60 }, vec![step("notice", notice())]);
+    let mut schedule = definition(
+        Trigger::Interval { seconds: 60 },
+        vec![step("notice", notice())],
+    );
     schedule.missed_policy = MissedPolicy::CatchUp { max: 3 };
     let w = f.create(schedule);
     let manual = f.create(definition(Trigger::Manual, vec![step("notice", notice())]));
@@ -1610,15 +1622,32 @@ fn disabled_schedules_skip_the_interval_and_pending_runs() {
     f.pulse(600_000);
     assert_eq!(f.run(&id).outcome_code.as_deref(), Some("server_disabled"));
     f.automation.resume_after_disable().unwrap();
-    let last: i64 = f.db.read(|c| Ok(c.query_row(
-        "SELECT last_occurrence FROM workflow_schedule WHERE workflow_id=?", [&w.id], |r| r.get(0),
-    )?)).unwrap();
+    let last: i64 =
+        f.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT last_occurrence FROM workflow_schedule WHERE workflow_id=?",
+                [&w.id],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
     assert_eq!(last, NOW + 600_000);
-    let skipped: String = f.db.read(|c| Ok(c.query_row(
+    let skipped: String =
+        f.db.read(|c| {
+            Ok(c.query_row(
         "SELECT id FROM workflow_runs WHERE workflow_id=? AND outcome_code='server_disabled'",
         [&w.id], |r| r.get(0),
-    )?)).unwrap();
+    )?)
+        })
+        .unwrap();
     assert_eq!(f.run(&skipped).trigger["occurrence"], NOW + 600_000);
     f.pulse(660_000);
-    assert_eq!(f.db.read(|c| Ok(c.query_row("SELECT count(*) FROM workflow_runs", [], |r| r.get::<_, i64>(0))?)).unwrap(), 3);
+    assert_eq!(
+        f.db.read(
+            |c| Ok(c.query_row("SELECT count(*) FROM workflow_runs", [], |r| r
+                .get::<_, i64>(0))?)
+        )
+        .unwrap(),
+        3
+    );
 }

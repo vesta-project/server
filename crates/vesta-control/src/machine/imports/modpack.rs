@@ -143,13 +143,18 @@ impl CreateUpload {
             .filter(|n| *n <= UPLOAD_MAX_BYTES)
             .ok_or(JobError("request_too_large"))?;
         if total > self.space_checked_through {
-            let available = self.jobs.0.env.free_bytes(&self.jobs.0.servers)
+            let available = self
+                .jobs
+                .0
+                .env
+                .free_bytes(&self.jobs.0.servers)
                 .ok_or(JobError::UNAVAILABLE)?
                 .saturating_sub(SPACE_MARGIN_BYTES);
             if total - self.bytes > available {
                 return Err(JobError("insufficient_space"));
             }
-            self.space_checked_through = total.max(self.bytes + available.min(SPACE_CHECK_INTERVAL_BYTES));
+            self.space_checked_through =
+                total.max(self.bytes + available.min(SPACE_CHECK_INTERVAL_BYTES));
         }
         self.hasher.update(data);
         file.write_all(data).map_err(|_| JobError::UNAVAILABLE)?;
@@ -162,8 +167,11 @@ impl CreateUpload {
         if self.bytes == 0 {
             return Err(JobError::INVALID);
         }
-        self.file.as_ref().ok_or(JobError::UNAVAILABLE)?
-            .sync_all().map_err(|_| JobError::UNAVAILABLE)?;
+        self.file
+            .as_ref()
+            .ok_or(JobError::UNAVAILABLE)?
+            .sync_all()
+            .map_err(|_| JobError::UNAVAILABLE)?;
         let file = self.file.take().ok_or(JobError::UNAVAILABLE)?;
         drop(file);
         let sha256 = hex::encode(std::mem::take(&mut self.hasher).finalize());
@@ -326,9 +334,8 @@ impl ImportJobs {
                 params![MAX_UPLOADS, now],
                 |row| row.get(0),
             )?;
-            Ok(expiry.map(|expiry| {
-                std::time::Duration::from_millis(expiry.saturating_sub(now) as u64)
-            }))
+            Ok(expiry
+                .map(|expiry| std::time::Duration::from_millis(expiry.saturating_sub(now) as u64)))
         })
     }
 

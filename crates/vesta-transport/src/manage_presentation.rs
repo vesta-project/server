@@ -33,7 +33,11 @@ struct Preview {
 pub(crate) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     dispatch_with_name(host, request, None)
 }
-pub(crate) fn dispatch_with_name(host: &NetworkHost, request: Request<'_>, server_name: Option<&str>) -> Reply {
+pub(crate) fn dispatch_with_name(
+    host: &NetworkHost,
+    request: Request<'_>,
+    server_name: Option<&str>,
+) -> Reply {
     let preview = request.path.ends_with("/preview");
     let mutation = request.method == Method::PUT;
     if request.query.is_some()
@@ -115,8 +119,13 @@ pub(crate) fn dispatch_with_name(host: &NetworkHost, request: Request<'_>, serve
         // Preview uses public configuration examples, never administrative errors,
         // private paths or caller-supplied diagnostic/operation text.
         let pack = host.configuration().pack();
-        let branding = host.management().permission_query(token,
-            vesta_control::identity::management::permissions::PermissionQuery::Server).ok();
+        let branding = host
+            .management()
+            .permission_query(
+                token,
+                vesta_control::identity::management::permissions::PermissionQuery::Server,
+            )
+            .ok();
         let name = branding.as_ref().and_then(|data| data["name"].as_str());
         let inputs = PublicInputs {
             server_name: name.or(server_name).unwrap_or_else(|| pack.name()),

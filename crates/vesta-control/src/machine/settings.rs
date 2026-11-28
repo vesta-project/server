@@ -1,8 +1,8 @@
 //! Owner-controlled host settings persisted in the host database.
 use super::{
     HostState,
-    startup::StartupAction,
     owners::Actor,
+    startup::StartupAction,
     state::{changed, reject},
 };
 use crate::{IdentityErrorCode as Code, Result};
@@ -123,9 +123,10 @@ pub(crate) fn removal_retention_in(c: &Connection) -> Result<u16> {
 }
 
 pub(super) fn startup_default_in(c: &Connection) -> Result<StartupAction> {
-    setting_in(c, "default_on_agent_start")?.map(|value| {
-        serde_json::from_str(&value).map_err(|_| reject(Code::InvalidRequest))
-    }).transpose().map(Option::unwrap_or_default)
+    setting_in(c, "default_on_agent_start")?
+        .map(|value| serde_json::from_str(&value).map_err(|_| reject(Code::InvalidRequest)))
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 fn settings_in(c: &Connection) -> Result<HostSettings> {
@@ -195,9 +196,17 @@ impl HostState {
                 )?;
             }
             if let Some(action) = patch.default_on_agent_start {
-                let value = serde_json::to_string(&action).map_err(|_| reject(Code::InvalidRequest))?;
+                let value =
+                    serde_json::to_string(&action).map_err(|_| reject(Code::InvalidRequest))?;
                 put_in(c, "default_on_agent_start", &value)?;
-                changed(c, false, "default_startup_change", &actor.audit(), "default_on_agent_start", self.now_ms())?;
+                changed(
+                    c,
+                    false,
+                    "default_startup_change",
+                    &actor.audit(),
+                    "default_on_agent_start",
+                    self.now_ms(),
+                )?;
             }
             settings_in(c)
         })

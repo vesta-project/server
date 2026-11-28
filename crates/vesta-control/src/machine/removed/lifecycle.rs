@@ -594,7 +594,10 @@ fn purge_files(servers: &Path, source: &Path, id: Uuid, keep_backups: bool) -> J
     fs::remove_dir_all(source).map_err(|_| JobError::UNAVAILABLE)
 }
 
-pub(in crate::machine) fn local_repository(source: &Path, original: &Path) -> JobResult<Option<PathBuf>> {
+pub(in crate::machine) fn local_repository(
+    source: &Path,
+    original: &Path,
+) -> JobResult<Option<PathBuf>> {
     let path = source.join("host.toml");
     let settings = match fs::symlink_metadata(&path) {
         Ok(metadata) if plain_file(&metadata) && metadata.len() <= 1024 * 1024 => {

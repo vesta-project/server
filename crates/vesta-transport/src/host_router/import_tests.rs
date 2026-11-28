@@ -122,7 +122,11 @@ impl ImportEnvironment for FakeEnv {
         (Vec::new(), "complete")
     }
     fn port_state(&self, port: u16) -> &'static str {
-        if std::net::TcpListener::bind(("0.0.0.0", port)).is_ok() { "free" } else { "occupied" }
+        if std::net::TcpListener::bind(("0.0.0.0", port)).is_ok() {
+            "free"
+        } else {
+            "occupied"
+        }
     }
     fn free_bytes(&self, _: &Path) -> Option<u64> {
         Some(self.space_limit.unwrap_or(100 * GIB))
@@ -266,10 +270,7 @@ impl Host {
         let devices = (device, stranger);
         let transport = Transport::start_host(router.clone(), &listener).unwrap();
         let mut wire = Wire::connect(transport.local_addr());
-        let owner = format!(
-            "Bearer {}",
-            session(&mut wire, host, device, &key)
-        );
+        let owner = format!("Bearer {}", session(&mut wire, host, device, &key));
         let stranger = format!(
             "Bearer {}",
             session(&mut wire, host, stranger, &stranger_key)
@@ -294,7 +295,12 @@ impl Host {
         let temp = std::mem::replace(&mut self.temp, tempfile::tempdir().unwrap());
         let devices = self.devices;
         drop(self);
-        for entry in std::fs::read_dir(temp.path().join("servers")).unwrap().flatten() { let _ = std::fs::remove_file(entry.path().join("game/fixture-exit")); }
+        for entry in std::fs::read_dir(temp.path().join("servers"))
+            .unwrap()
+            .flatten()
+        {
+            let _ = std::fs::remove_file(entry.path().join("game/fixture-exit"));
+        }
         Self::start(temp, env, creator, Some(devices), None)
     }
     fn wire(&self) -> Wire {
@@ -306,14 +312,29 @@ impl Host {
         std::fs::write(path, bytes).unwrap();
     }
     fn call(&self, method: &str, path: &str, body: Value, auth: &str) -> (u16, Value) {
-        self.call_until(method, path, body, auth, std::time::Instant::now() + Duration::from_secs(65))
+        self.call_until(
+            method,
+            path,
+            body,
+            auth,
+            std::time::Instant::now() + Duration::from_secs(65),
+        )
     }
     // Headers are discarded by the wire helper; back off within the caller's deadline.
-    fn call_until(&self, method: &str, path: &str, body: Value, auth: &str, until: std::time::Instant) -> (u16, Value) {
+    fn call_until(
+        &self,
+        method: &str,
+        path: &str,
+        body: Value,
+        auth: &str,
+        until: std::time::Instant,
+    ) -> (u16, Value) {
         loop {
             let reply = self.wire().request(method, path, body.clone(), Some(auth));
             let remaining = until.saturating_duration_since(std::time::Instant::now());
-            if reply.0 != 429 || remaining.is_zero() { return reply; }
+            if reply.0 != 429 || remaining.is_zero() {
+                return reply;
+            }
             std::thread::sleep(Duration::from_secs(2).min(remaining));
         }
     }
@@ -347,7 +368,10 @@ impl Host {
                 std::time::Instant::now() < until,
                 "job did not settle: {value}"
             );
-            std::thread::sleep(Duration::from_secs(1).min(until.saturating_duration_since(std::time::Instant::now())));
+            std::thread::sleep(
+                Duration::from_secs(1)
+                    .min(until.saturating_duration_since(std::time::Instant::now())),
+            );
         }
     }
 
@@ -377,7 +401,12 @@ impl Drop for Host {
         // Model the service cgroup ending owned fixture games before worker shutdown.
         if let Some(jobs) = self.router.imports() {
             if let Ok(entries) = std::fs::read_dir(jobs.servers_root()) {
-                for entry in entries.flatten() { let game=entry.path().join("game"); if game.join("vesta-create-fixture").is_file() { let _=std::fs::write(game.join("fixture-exit"),b"exit"); } }
+                for entry in entries.flatten() {
+                    let game = entry.path().join("game");
+                    if game.join("vesta-create-fixture").is_file() {
+                        let _ = std::fs::write(game.join("fixture-exit"), b"exit");
+                    }
+                }
             }
         }
         std::thread::sleep(Duration::from_millis(300));
@@ -392,7 +421,11 @@ impl Drop for Host {
 fn fake_vanilla(host: &Host) {
     host.put(
         "vanilla/server.properties",
-        format!("server-port={}\nmotd=hi\nenable-rcon=true\nrcon.password=hunter2\n", free_port()).as_bytes(),
+        format!(
+            "server-port={}\nmotd=hi\nenable-rcon=true\nrcon.password=hunter2\n",
+            free_port()
+        )
+        .as_bytes(),
     );
     host.put("vanilla/minecraft_server.1.21.1.jar", b"jar");
     host.put("vanilla/world/level.dat", b"nbt");
@@ -590,7 +623,10 @@ fn owner_cancels_a_review_and_a_running_copy() {
     );
     assert_eq!(status, 200, "{requested}");
     assert_eq!(requested["state"], "applying"); // safe boundary pending
-    let done = host.wait(id, Duration::from_secs(30), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+    let done = host.wait(id, Duration::from_secs(30), |j| {
+        !matches!(j["state"].as_str(), Some("applying" | "starting"))
+            && (j["state"] != "ready" || !j["error"].is_null())
+    });
     assert_eq!(done["state"], "cancelled", "{done}");
     assert!(!host.temp.path().join("servers").join(&server).exists());
     assert_eq!(
@@ -856,7 +892,11 @@ fn create_catalogue_and_defaults_are_machine_level_and_owner_only() {
     assert_eq!(status, 200, "{value}");
     assert_eq!(value["name"], "Minecraft Server");
     assert_eq!(value["minecraftVersion"], "26.1");
-    assert!(value["gamePort"].as_u64().is_some_and(|p| std::net::TcpListener::bind(("0.0.0.0",p as u16)).is_ok()));
+    assert!(
+        value["gamePort"]
+            .as_u64()
+            .is_some_and(|p| std::net::TcpListener::bind(("0.0.0.0", p as u16)).is_ok())
+    );
     assert_eq!(value["memoryMiB"], 2048);
     assert_eq!(value["java"], "automatic");
     assert!(host.router.workers.lock().unwrap().is_empty());

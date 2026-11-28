@@ -178,5 +178,10 @@ fn unsupported_host_commands_and_extra_arguments_do_not_load_configuration() {
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     assert!(output.stdout.starts_with(b"Vesta Server\n"));
-    assert!(output.stdout.windows(b"Advanced".len()).any(|w| w == b"Advanced"));
+    assert!(
+        output
+            .stdout
+            .windows(b"Advanced".len())
+            .any(|w| w == b"Advanced")
+    );
 }

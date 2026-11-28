@@ -130,18 +130,39 @@ pub(crate) fn backfill(
                     "org.quiltmc.loader.impl.launch.knot.KnotServer",
                 )
             };
-            let jar = args.first().and_then(|v| v.strip_prefix(property)).map(Path::new);
+            let jar = args
+                .first()
+                .and_then(|v| v.strip_prefix(property))
+                .map(Path::new);
             let instance = jar.and_then(|p| p.parent()).and_then(|p| p.parent());
-            let receipt = instance.and_then(|p| std::fs::read(p.join("control/receipt.json")).ok())
-                .and_then(|v| serde_json::from_slice::<vesta_server_install::BundleReceipt>(&v).ok());
+            let receipt = instance
+                .and_then(|p| std::fs::read(p.join("control/receipt.json")).ok())
+                .and_then(|v| {
+                    serde_json::from_slice::<vesta_server_install::BundleReceipt>(&v).ok()
+                });
             args.len() == 5
-                && args[0].strip_prefix(property).is_some_and(|p| valid_path(p, "software/vanilla.jar"))
-                && args[1] == "-cp" && args[3] == main && args[4] == "nogui"
-                && receipt.as_ref().zip(instance).is_some_and(|(receipt, instance)| {
-                    receipt.software == software && receipt.version == pack.minecraft_version()
-                        && Some(&receipt.loader_version) == loader_version.as_ref()
-                        && args[2] == receipt.artifacts.iter().skip(1).map(|a| instance.join(&a.path).to_string_lossy().into_owned()).collect::<Vec<_>>().join(if cfg!(windows) { ";" } else { ":" })
-                })
+                && args[0]
+                    .strip_prefix(property)
+                    .is_some_and(|p| valid_path(p, "software/vanilla.jar"))
+                && args[1] == "-cp"
+                && args[3] == main
+                && args[4] == "nogui"
+                && receipt
+                    .as_ref()
+                    .zip(instance)
+                    .is_some_and(|(receipt, instance)| {
+                        receipt.software == software
+                            && receipt.version == pack.minecraft_version()
+                            && Some(&receipt.loader_version) == loader_version.as_ref()
+                            && args[2]
+                                == receipt
+                                    .artifacts
+                                    .iter()
+                                    .skip(1)
+                                    .map(|a| instance.join(&a.path).to_string_lossy().into_owned())
+                                    .collect::<Vec<_>>()
+                                    .join(if cfg!(windows) { ";" } else { ":" })
+                    })
         }
         _ => false,
     };

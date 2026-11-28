@@ -799,7 +799,9 @@ async fn ensure_planned(
     excluded: &[PathBuf],
     jdk: bool,
 ) -> Result<JavaRuntime> {
-    let required = plan.required_major.ok_or(SoftwareError::RuntimeUnavailable)?;
+    let required = plan
+        .required_major
+        .ok_or(SoftwareError::RuntimeUnavailable)?;
     if !plan.download_required {
         let id = plan.selected_runtime_id.as_deref();
         for path in candidates_in(cache_root, None) {

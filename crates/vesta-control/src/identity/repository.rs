@@ -39,7 +39,8 @@ impl<'a> Repository<'a> {
     }
 
     pub(super) fn policy(&self, subject: Option<&Subject>) -> Result<PolicySnapshot> {
-        if let Some(policy) = super::worker_policy::resolve(self.connection, self.server, subject)? {
+        if let Some(policy) = super::worker_policy::resolve(self.connection, self.server, subject)?
+        {
             return Ok(policy);
         }
         let Some(subject) = subject else {

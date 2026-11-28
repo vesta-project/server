@@ -27,7 +27,10 @@ pub const HELP: &str = "vesta-setup update <init|status|check|stage|verify|confi
 pub fn run(args: &[String]) -> Result<(), String> {
     // A machine has no legacy first-server consumer; never trial it as one.
     if let Some(i) = args.iter().position(|a| a == "--root") {
-        if args.get(i + 1).is_some_and(|r| std::path::Path::new(r).join("host").is_dir() && !std::path::Path::new(r).join("private/setup.json").exists()) {
+        if args.get(i + 1).is_some_and(|r| {
+            std::path::Path::new(r).join("host").is_dir()
+                && !std::path::Path::new(r).join("private/setup.json").exists()
+        }) {
             return Err("Host-mode signed update trials are not yet supported. Reinstall a verified release to upgrade; host state is preserved.".into());
         }
     }

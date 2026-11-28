@@ -168,8 +168,8 @@ impl PolicyDocument {
                     ),
                     warn_seconds: Some(p.warn_seconds),
                     max_snapshots: p.max_snapshots,
-                max_snapshot_bytes: p.max_snapshot_bytes,
-                max_collection_bytes: p.max_collection_bytes,
+                    max_snapshot_bytes: p.max_snapshot_bytes,
+                    max_collection_bytes: p.max_collection_bytes,
                     include: p.include.clone(),
                     exclude: p.exclude.clone(),
                 })

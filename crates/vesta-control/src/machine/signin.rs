@@ -8,8 +8,8 @@ use super::{
     owners::{
         Device, device_by_key_in, enroll_device_in, holds_any_role_in, record_account_name_in,
     },
-    settings::{NewDeviceSignIn, device_name, sign_in_mode_in},
     sessions::*,
+    settings::{NewDeviceSignIn, device_name, sign_in_mode_in},
     state::{changed, reject},
 };
 use serde::{Deserialize, Serialize};
@@ -64,49 +64,48 @@ pub fn sign_in(
         &json!({"hostId":host,"fingerprint":fingerprint,"accountProofId":request.account_proof_id,"deviceKey":request.device_key,"deviceName":request.device_name}),
     )?;
     // Every definitive answer consumes the proof; only transient failures keep it.
-    accounts
-        .consume_checked(
-            &request.account_proof_id,
-            scope,
-            |account, verified_name, proof_live| {
-                state
-                    .write(|c| {
-                        if !proof_live() {
-                            return Err(reject(crate::IdentityErrorCode::CodeInvalid));
+    accounts.consume_checked(
+        &request.account_proof_id,
+        scope,
+        |account, verified_name, proof_live| {
+            state
+                .write(|c| {
+                    if !proof_live() {
+                        return Err(reject(crate::IdentityErrorCode::CodeInvalid));
+                    }
+                    if !holds_any_role_in(c, account)? {
+                        return Ok(Err(NO_ACCESS));
+                    }
+                    let now = state.now_ms();
+                    if let Some(existing) = device_by_key_in(c, &key)? {
+                        if existing.account_id != account || existing.revoked_at_ms.is_some() {
+                            return Ok(Err(KEY_UNUSABLE));
                         }
-                        if !holds_any_role_in(c, account)? {
-                            return Ok(Err(NO_ACCESS));
-                        }
-                        let now = state.now_ms();
-                        if let Some(existing) = device_by_key_in(c, &key)? {
-                            if existing.account_id != account || existing.revoked_at_ms.is_some() {
-                                return Ok(Err(KEY_UNUSABLE));
-                            }
-                            record_account_name_in(c, account, verified_name, now)?;
-                            return Ok(Ok(SignedIn {
-                                device: existing,
-                                created: false,
-                            }));
-                        }
-                        if sign_in_mode_in(c)? == NewDeviceSignIn::Approval {
-                            return Ok(Err(APPROVAL_REQUIRED));
-                        }
-                        let device = enroll_device_in(c, account, &name, key, now)?;
                         record_account_name_in(c, account, verified_name, now)?;
-                        changed(
-                            c,
-                            true,
-                            "device_sign_in",
-                            &account.to_string(),
-                            &device.device_id.to_string(),
-                            now,
-                        )?;
-                        Ok(Ok(SignedIn {
-                            device,
-                            created: true,
-                        }))
-                    })
-                    .map_err(|_| PAIRING)
-            },
-        )?
+                        return Ok(Ok(SignedIn {
+                            device: existing,
+                            created: false,
+                        }));
+                    }
+                    if sign_in_mode_in(c)? == NewDeviceSignIn::Approval {
+                        return Ok(Err(APPROVAL_REQUIRED));
+                    }
+                    let device = enroll_device_in(c, account, &name, key, now)?;
+                    record_account_name_in(c, account, verified_name, now)?;
+                    changed(
+                        c,
+                        true,
+                        "device_sign_in",
+                        &account.to_string(),
+                        &device.device_id.to_string(),
+                        now,
+                    )?;
+                    Ok(Ok(SignedIn {
+                        device,
+                        created: true,
+                    }))
+                })
+                .map_err(|_| PAIRING)
+        },
+    )?
 }

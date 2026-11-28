@@ -677,14 +677,19 @@ fn host_end_to_end_claim_sessions_and_registry_mapping() {
     }
     drop(removal);
     let (_, _, previous) = conditional.raw("GET", &role_path, &owner_header, b"");
-    state.set_server_role(
-        Actor::Account(account),
-        server,
-        stranger_account,
-        Some(ServerRole::PackUser),
-        state.snapshot().unwrap().revision,
-    ).unwrap();
-    let check = format!("{owner_header}If-None-Match: {}\r\n", previous.as_deref().unwrap());
+    state
+        .set_server_role(
+            Actor::Account(account),
+            server,
+            stranger_account,
+            Some(ServerRole::PackUser),
+            state.snapshot().unwrap().revision,
+        )
+        .unwrap();
+    let check = format!(
+        "{owner_header}If-None-Match: {}\r\n",
+        previous.as_deref().unwrap()
+    );
     let (status, _, changed) = conditional.raw("GET", &role_path, &check, b"");
     assert_eq!(status, 200);
     assert_ne!(changed, previous);
@@ -799,7 +804,10 @@ fn host_end_to_end_claim_sessions_and_registry_mapping() {
         "manage/files/follow?path=config/test.json",
         "manage/metrics/stream",
         "realtime?installed=0",
-    ].into_iter().chain(std::iter::repeat_n("manage/console/stream", 5)) {
+    ]
+    .into_iter()
+    .chain(std::iter::repeat_n("manage/console/stream", 5))
+    {
         let mut stream = Wire::connect(transport.local_addr());
         let upgrade = format!(
             "{owner}\r\nConnection: upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="
@@ -921,7 +929,11 @@ fn host_account_sign_in_enrolls_new_device_without_code() {
     let owner = Uuid::new_v4();
     let desk = Ed25519KeyPair::from_seed_unchecked(&[71; 32]).unwrap();
     let desk_device = state
-        .claim(owner, "Desk", desk.public_key().as_ref().try_into().unwrap())
+        .claim(
+            owner,
+            "Desk",
+            desk.public_key().as_ref().try_into().unwrap(),
+        )
         .unwrap();
     let identity = Arc::new(HostIdentity::new(state.clone()).unwrap());
     identity.test_account(owner, "TestOwner");
@@ -976,16 +988,24 @@ fn host_account_sign_in_enrolls_new_device_without_code() {
     assert_eq!(enrolled["deviceName"], "Work laptop");
     let laptop_id = enrolled["deviceId"].as_str().unwrap().to_owned();
     // Replaying the consumed proof is refused.
-    assert_eq!(
-        wire.request("POST", "/v1/host/sign-in", body, None).0,
-        401
-    );
+    assert_eq!(wire.request("POST", "/v1/host/sign-in", body, None).0, 401);
     let laptop_session = format!("Bearer {}", enrolled["session"].as_str().unwrap());
     assert_eq!(
-        wire.request("GET", "/v1/host/servers", Value::Null, Some(&laptop_session)).0,
+        wire.request(
+            "GET",
+            "/v1/host/servers",
+            Value::Null,
+            Some(&laptop_session)
+        )
+        .0,
         200
     );
-    let (status, devices) = wire.request("GET", "/v1/host/devices", Value::Null, Some(&laptop_session));
+    let (status, devices) = wire.request(
+        "GET",
+        "/v1/host/devices",
+        Value::Null,
+        Some(&laptop_session),
+    );
     assert_eq!(status, 200);
     let listed = devices["devices"]
         .as_array()
@@ -996,7 +1016,8 @@ fn host_account_sign_in_enrolls_new_device_without_code() {
         .clone();
     assert_eq!(listed["name"], "Work laptop");
     assert!(listed["createdAt"].is_string());
-    let (status, owners) = wire.request("GET", "/v1/host/owners", Value::Null, Some(&laptop_session));
+    let (status, owners) =
+        wire.request("GET", "/v1/host/owners", Value::Null, Some(&laptop_session));
     assert_eq!(status, 200, "{owners}");
     assert_eq!(
         owners["owners"],
@@ -1045,15 +1066,33 @@ fn host_account_sign_in_enrolls_new_device_without_code() {
         session(&mut wire, host, desk_device.device_id, &desk)
     );
     assert_eq!(
-        wire.request("GET", "/v1/host/owners", Value::Null, Some(&stranger_session)).0,
+        wire.request(
+            "GET",
+            "/v1/host/owners",
+            Value::Null,
+            Some(&stranger_session)
+        )
+        .0,
         403
     );
     assert_eq!(
-        wire.request("PATCH", "/v1/host", json!({"name":"Mine"}), Some(&stranger_session)).0,
+        wire.request(
+            "PATCH",
+            "/v1/host",
+            json!({"name":"Mine"}),
+            Some(&stranger_session)
+        )
+        .0,
         403
     );
     assert_eq!(
-        wire.request("PATCH", "/v1/host", json!({"name":"x".repeat(64)}), Some(&owner_session)).0,
+        wire.request(
+            "PATCH",
+            "/v1/host",
+            json!({"name":"x".repeat(64)}),
+            Some(&owner_session)
+        )
+        .0,
         400
     );
     let (status, renamed) = wire.request(
@@ -1066,9 +1105,13 @@ fn host_account_sign_in_enrolls_new_device_without_code() {
     assert_eq!(renamed["name"], "Family server");
     assert_eq!(renamed["newDeviceSignIn"], "approval");
     let (_, info) = wire.request("GET", "/v1/host", Value::Null, Some(&owner_session));
-    assert_eq!((info["name"].clone(), info["newDeviceSignIn"].clone()), (json!("Family server"), json!("approval")));
     assert_eq!(
-        wire.request("GET", "/v1/host/discovery", Value::Null, None).1["name"],
+        (info["name"].clone(), info["newDeviceSignIn"].clone()),
+        (json!("Family server"), json!("approval"))
+    );
+    assert_eq!(
+        wire.request("GET", "/v1/host/discovery", Value::Null, None)
+            .1["name"],
         "Family server"
     );
     drop(wire);
@@ -1098,7 +1141,13 @@ fn host_account_sign_in_enrolls_new_device_without_code() {
         204
     );
     assert_eq!(
-        wire.request("GET", "/v1/host/servers", Value::Null, Some(&laptop_session)).0,
+        wire.request(
+            "GET",
+            "/v1/host/servers",
+            Value::Null,
+            Some(&laptop_session)
+        )
+        .0,
         401
     );
     // Anonymous sign-in challenges are rate limited per address.

@@ -655,7 +655,9 @@ impl ManagementAccess {
         self
     }
     pub fn authenticate(&self, token: &str) -> Result<Subject> {
-        if let Some(trusted) = &self.trusted { return trusted.authenticate(); }
+        if let Some(trusted) = &self.trusted {
+            return trusted.authenticate();
+        }
         decode::<32>(token).map_err(|_| ManagementError::SessionInvalid)?;
         let mut stores = self
             .stores
@@ -824,7 +826,10 @@ pub fn pairing_link(
 
 impl ManagementAccess {
     /// Public registry identity when serving through a host worker facade.
-    pub fn protocol_server_id(&self)->String {
-        self.trusted.as_ref().map(|t|t.server_id().to_string()).unwrap_or_else(||self.server_id().to_owned())
+    pub fn protocol_server_id(&self) -> String {
+        self.trusted
+            .as_ref()
+            .map(|t| t.server_id().to_string())
+            .unwrap_or_else(|| self.server_id().to_owned())
     }
 }

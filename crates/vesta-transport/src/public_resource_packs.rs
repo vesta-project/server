@@ -14,14 +14,15 @@ pub(crate) fn dispatch(
     path: &str,
     downloads: Arc<Semaphore>,
 ) -> Reply {
-    dispatch_handle(host.resource_packs(),method,path,downloads)
+    dispatch_handle(host.resource_packs(), method, path, downloads)
 }
 pub(crate) fn dispatch_handle(
     handle: &hosting::Handle,
     method: &Method,
     path: &str,
     downloads: Arc<Semaphore>,
-) -> Reply {    if !matches!(*method, Method::GET | Method::HEAD) {
+) -> Reply {
+    if !matches!(*method, Method::GET | Method::HEAD) {
         return error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
     }
     let Some(sha) = path

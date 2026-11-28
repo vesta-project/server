@@ -351,7 +351,9 @@ fn server_parts(
                         let trash = state.join("trash");
                         let folders = state.join("trash-folders");
                         parts.trash = trash_bytes(&state)?;
-                        parts.other = parts.other.saturating_add(tree_bytes(&private, &[&trash, &folders])?);
+                        parts.other = parts
+                            .other
+                            .saturating_add(tree_bytes(&private, &[&trash, &folders])?);
                     } else {
                         parts.other = parts.other.saturating_add(tree_bytes(&private, &[])?);
                     }

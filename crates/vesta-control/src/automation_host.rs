@@ -234,70 +234,116 @@ impl HostActions {
         let runtime = self.runtime().map_err(|_| ())?;
         let properties = crate::minecraft_admission::ServerProperties::load(
             &directory.join("server.properties"),
-        ).map_err(|_| ())?;
+        )
+        .map_err(|_| ())?;
         if !properties.online_mode() {
             return Ok(());
         }
-        let bans = crate::minecraft_admission::BanList::load(&directory.join("banned-players.json"))
-            .map_err(|_| ())?;
+        let bans =
+            crate::minecraft_admission::BanList::load(&directory.join("banned-players.json"))
+                .map_err(|_| ())?;
         let current = crate::moderation::whitelist(directory).map_err(|_| ())?;
         if self.observe_whitelist_sync(runtime, &current)? {
             return Ok(());
         }
         let now = self.db.clock().millis();
-        let (subject, mut desired, managed) = self.db.read(|c| {
-            let desired = desired_whitelist(c, self.db.server_id(), now)?;
-            let actor: Option<(String,String)> = c.query_row(
+        let (subject, mut desired, managed) =
+            self.db
+                .read(|c| {
+                    let desired = desired_whitelist(c, self.db.server_id(), now)?;
+                    let actor: Option<(String,String)> = c.query_row(
                 "SELECT principal_id,device_id FROM whitelist_sync_actor WHERE singleton=1",[],
                 |r|Ok((r.get(0)?,r.get(1)?)),
             ).optional()?;
-            let subject = actor.and_then(|(principal, device)| Some(Subject {
-                principal: PrincipalId::parse(&principal).ok()?,
-                device: DeviceId::parse(&device).ok()?,
-            }));
-            let subject = crate::identity::worker_policy::whitelist_sync_owner(c)?
-                .or_else(|| subject.filter(|subject| actor_is_current(c, self.db.server_id(), now, subject)));
-            let mut q = c.prepare("SELECT uuid,name FROM whitelist_sync_members")?;
-            let managed = q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok((subject, desired, managed))
-        }).map_err(|_| ())?;
-        let Some(subject) = subject else { return Ok(()) };
+                    let subject = actor.and_then(|(principal, device)| {
+                        Some(Subject {
+                            principal: PrincipalId::parse(&principal).ok()?,
+                            device: DeviceId::parse(&device).ok()?,
+                        })
+                    });
+                    let subject =
+                        crate::identity::worker_policy::whitelist_sync_owner(c)?.or_else(|| {
+                            subject.filter(|subject| {
+                                actor_is_current(c, self.db.server_id(), now, subject)
+                            })
+                        });
+                    let mut q = c.prepare("SELECT uuid,name FROM whitelist_sync_members")?;
+                    let managed = q
+                        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    Ok((subject, desired, managed))
+                })
+                .map_err(|_| ())?;
+        let Some(subject) = subject else {
+            return Ok(());
+        };
         desired.retain(|uuid, _| MinecraftUuid::parse(uuid).is_ok_and(|id| !bans.contains(id)));
         let snapshot = runtime.game_snapshot().map_err(|_| ())?;
-        let lookup = |uuid: &str| current.iter().find(|entry| entry.uuid.eq_ignore_ascii_case(uuid));
+        let lookup = |uuid: &str| {
+            current
+                .iter()
+                .find(|entry| entry.uuid.eq_ignore_ascii_case(uuid))
+        };
         // Process removals first. If an operator replaced the managed entry with
         // a different name, release ownership instead of removing their entry.
-        let change = managed.into_iter().find_map(|(uuid, name)| {
-            if desired.contains_key(&uuid) {
-                return None;
-            }
-            Some((lookup(&uuid).is_some_and(|entry| entry.name.eq_ignore_ascii_case(&name)),
-                WhitelistSyncChange { uuid, name, add: false }))
-        }).or_else(|| {
-            desired.into_iter().find_map(|(uuid, name)| {
-                (lookup(&uuid).is_none() && !current.iter().any(|entry| entry.name.eq_ignore_ascii_case(&name)))
-                    .then_some((true, WhitelistSyncChange { uuid, name, add: true }))
+        let change = managed
+            .into_iter()
+            .find_map(|(uuid, name)| {
+                if desired.contains_key(&uuid) {
+                    return None;
+                }
+                Some((
+                    lookup(&uuid).is_some_and(|entry| entry.name.eq_ignore_ascii_case(&name)),
+                    WhitelistSyncChange {
+                        uuid,
+                        name,
+                        add: false,
+                    },
+                ))
             })
-        });
-        let Some((needs_edit, change)) = change else { return Ok(()) };
+            .or_else(|| {
+                desired.into_iter().find_map(|(uuid, name)| {
+                    (lookup(&uuid).is_none()
+                        && !current
+                            .iter()
+                            .any(|entry| entry.name.eq_ignore_ascii_case(&name)))
+                    .then_some((
+                        true,
+                        WhitelistSyncChange {
+                            uuid,
+                            name,
+                            add: true,
+                        },
+                    ))
+                })
+            });
+        let Some((needs_edit, change)) = change else {
+            return Ok(());
+        };
         if !needs_edit {
             return self.db.write(|c| Ok(change.record(c)?)).map_err(|_| ());
         }
         if snapshot.phase == ProcessPhase::Running {
             let generation = snapshot.generation.ok_or(())?;
-            runtime.submit_whitelist_sync(&subject, generation, &change).map_err(|_| ())?;
+            runtime
+                .submit_whitelist_sync(&subject, generation, &change)
+                .map_err(|_| ())?;
         } else if snapshot.phase == ProcessPhase::Stopped && snapshot.generation.is_none() {
             let value = self.files.offline_whitelist(&subject).map_err(|_| ())?;
-            let items: Vec<crate::moderation::WhitelistEntry> = serde_json::from_value(value["items"].clone()).map_err(|_| ())?;
-            let entry = items.iter().find(|entry| entry.uuid.eq_ignore_ascii_case(&change.uuid));
+            let items: Vec<crate::moderation::WhitelistEntry> =
+                serde_json::from_value(value["items"].clone()).map_err(|_| ())?;
+            let entry = items
+                .iter()
+                .find(|entry| entry.uuid.eq_ignore_ascii_case(&change.uuid));
             if change.add == entry.is_some()
                 || entry.is_some_and(|entry| !entry.name.eq_ignore_ascii_case(&change.name))
             {
                 return Ok(());
             }
             let hash = value["sha256"].as_str().map(str::to_owned);
-            self.files.sync_offline_whitelist(runtime, &subject, &change, hash).map_err(|_| ())?;
+            self.files
+                .sync_offline_whitelist(runtime, &subject, &change, hash)
+                .map_err(|_| ())?;
         }
         Ok(())
     }
@@ -316,28 +362,50 @@ impl HostActions {
                 [], |r| Ok((r.get::<_,String>(0)?, WhitelistSyncChange { uuid:r.get(1)?, name:r.get(2)?, add:r.get(3)? })),
             ).optional()?)
         }).map_err(|_| ())?;
-        let Some((id, change)) = pending else { return Ok(false) };
-        let operation = runtime.operations_service()
-            .summary_trusted(&OperationId::parse(&id).map_err(|_| ())?).map_err(|_| ())?;
-        let present = current.iter().any(|entry| entry.uuid.eq_ignore_ascii_case(&change.uuid)
-            && entry.name.eq_ignore_ascii_case(&change.name));
+        let Some((id, change)) = pending else {
+            return Ok(false);
+        };
+        let operation = runtime
+            .operations_service()
+            .summary_trusted(&OperationId::parse(&id).map_err(|_| ())?)
+            .map_err(|_| ())?;
+        let present = current.iter().any(|entry| {
+            entry.uuid.eq_ignore_ascii_case(&change.uuid)
+                && entry.name.eq_ignore_ascii_case(&change.name)
+        });
         let mut confirmed = false;
         if let Some(operation) = operation {
             if operation.state == OperationState::Succeeded {
                 confirmed = change.add == present;
-                if !confirmed && self.db.clock().millis().saturating_sub(operation.updated_at_ms) < 30_000 {
+                if !confirmed
+                    && self
+                        .db
+                        .clock()
+                        .millis()
+                        .saturating_sub(operation.updated_at_ms)
+                        < 30_000
+                {
                     return Ok(true);
                 }
-            } else if !operation.state.is_terminal() && operation.state != OperationState::RecoveryRequired {
+            } else if !operation.state.is_terminal()
+                && operation.state != OperationState::RecoveryRequired
+            {
                 return Ok(true);
             }
         }
-        self.db.write(|c| {
-            if c.execute("DELETE FROM whitelist_sync_pending WHERE operation_id=?", [&id])? != 0 && confirmed {
-                change.record(c)?;
-            }
-            Ok(())
-        }).map_err(|_| ())?;
+        self.db
+            .write(|c| {
+                if c.execute(
+                    "DELETE FROM whitelist_sync_pending WHERE operation_id=?",
+                    [&id],
+                )? != 0
+                    && confirmed
+                {
+                    change.record(c)?;
+                }
+                Ok(())
+            })
+            .map_err(|_| ())?;
         Ok(true)
     }
     fn required(action: &Action) -> Result<Option<Capability>, ActionError> {
@@ -368,9 +436,8 @@ impl HostActions {
 }
 
 fn actor_is_current(c: &rusqlite::Connection, server: &str, now: i64, subject: &Subject) -> bool {
-    crate::identity::policy_in(c, server, now, Some(subject)).is_ok_and(|policy| {
-        policy.check(Capability::PlayersModerate, None).allowed()
-    })
+    crate::identity::policy_in(c, server, now, Some(subject))
+        .is_ok_and(|policy| policy.check(Capability::PlayersModerate, None).allowed())
 }
 
 pub(crate) fn desired_whitelist(
@@ -378,7 +445,11 @@ pub(crate) fn desired_whitelist(
     server: &str,
     now: i64,
 ) -> vesta_state::Result<std::collections::BTreeMap<String, String>> {
-    let json: String = c.query_row("SELECT settings_json FROM access_role_sources WHERE singleton=1", [], |row| row.get(0))?;
+    let json: String = c.query_row(
+        "SELECT settings_json FROM access_role_sources WHERE singleton=1",
+        [],
+        |row| row.get(0),
+    )?;
     let settings: crate::identity::management::AccessSettings = serde_json::from_str(&json)
         .map_err(|_| vesta_state::StateError::new("access_settings_invalid"))?;
     let roles = &settings.auto_whitelist_roles;
@@ -390,7 +461,11 @@ pub(crate) fn desired_whitelist(
     if let Some(available) = crate::identity::worker_policy::whitelist_roles(c)? {
         for (role, profiles) in available {
             if all_roles || roles.contains(&role) {
-                desired.extend(profiles.into_iter().map(|(id, name)| (id.to_string(), name)));
+                desired.extend(
+                    profiles
+                        .into_iter()
+                        .map(|(id, name)| (id.to_string(), name)),
+                );
             }
         }
         return Ok(desired);
@@ -404,11 +479,18 @@ pub(crate) fn desired_whitelist(
     let mut rows = q.query([])?;
     while let Some(row) = rows.next()? {
         let (device, principal): (String, String) = (row.get(2)?, row.get(3)?);
-        let (Ok(device), Ok(principal)) = (DeviceId::parse(&device), PrincipalId::parse(&principal)) else {
+        let (Ok(device), Ok(principal)) =
+            (DeviceId::parse(&device), PrincipalId::parse(&principal))
+        else {
             continue;
         };
         if crate::identity::policy_in(c, server, now, Some(&Subject { principal, device }))
-            .is_ok_and(|policy| policy.roles().iter().any(|role| all_roles || roles.contains(role.as_str())))
+            .is_ok_and(|policy| {
+                policy
+                    .roles()
+                    .iter()
+                    .any(|role| all_roles || roles.contains(role.as_str()))
+            })
         {
             desired.insert(row.get(0)?, row.get(1)?);
         }

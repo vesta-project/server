@@ -1208,7 +1208,13 @@ fn whitelist_sync_toggle_persists_authority_and_requires_current_version() {
         PermissionMutation::Access(patch),
     )
     .unwrap();
-    assert!(f.service.access_local().unwrap().auto_whitelist_roles.contains("*"));
+    assert!(
+        f.service
+            .access_local()
+            .unwrap()
+            .auto_whitelist_roles
+            .contains("*")
+    );
     let actor: String =
         f.db.read(|c| {
             Ok(

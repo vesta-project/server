@@ -68,10 +68,10 @@ fn user_row(
 ) -> Result<serde_json::Value, Reply> {
     let mut row = user(id, role, name, revision, count);
     row["roles"][0]["role"] = roles
-            .iter()
-            .find(|value| value["id"] == role.id())
-            .cloned()
-            .ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"))?;
+        .iter()
+        .find(|value| value["id"] == role.id())
+        .cloned()
+        .ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"))?;
     row["overrides"] = json!(
         state
             .capability_overrides(server, id)
@@ -123,9 +123,11 @@ pub(super) fn dispatch(
         let result = if path == "roles" {
             Some(state.server_role_list(actor, server))
         } else if path == "roles/capabilities" {
-            Some(state
-                .check_server_access_view(actor, server)
-                .map(|()| capability_catalog()))
+            Some(
+                state
+                    .check_server_access_view(actor, server)
+                    .map(|()| capability_catalog()),
+            )
         } else {
             None
         };
@@ -215,10 +217,14 @@ fn handle(
     } else if kind == "roles" && query.is_none() {
         match (method.as_str(), path) {
             ("POST", _) if path.ends_with("/reset") => {
-                let id = path.strip_prefix("roles/").and_then(|path| path.strip_suffix("/reset"))
+                let id = path
+                    .strip_prefix("roles/")
+                    .and_then(|path| path.strip_suffix("/reset"))
                     .ok_or_else(|| failure(StatusCode::NOT_FOUND, "not_found"))?;
                 let input: Version = parse(bytes)?;
-                let (snapshot, role) = state.write_builtin_role(actor, server, id, version(&input.expected_version)?, None).map_err(access_error)?;
+                let (snapshot, role) = state
+                    .write_builtin_role(actor, server, id, version(&input.expected_version)?, None)
+                    .map_err(access_error)?;
                 refresh(router, server, device)?;
                 crate::manage::ok(json!({"version":snapshot.revision.to_string(),"role":role}))
             }
@@ -226,16 +232,32 @@ fn handle(
                 let id = if method == Method::POST && path == "roles" {
                     None
                 } else if method == Method::PATCH {
-                    let id = path.strip_prefix("roles/").filter(|id| !id.contains('/'))
+                    let id = path
+                        .strip_prefix("roles/")
+                        .filter(|id| !id.contains('/'))
                         .ok_or_else(|| failure(StatusCode::NOT_FOUND, "not_found"))?;
                     if let Ok(id) = id.parse::<Uuid>() {
                         Some(id)
                     } else {
                         let input: RoleWrite = parse(bytes)?;
-                        let fields = RoleFields { name: input.name, rank: input.rank, capabilities: input.capabilities };
-                        let (snapshot, role) = state.write_builtin_role(actor, server, id, version(&input.expected_version)?, Some(fields)).map_err(access_error)?;
+                        let fields = RoleFields {
+                            name: input.name,
+                            rank: input.rank,
+                            capabilities: input.capabilities,
+                        };
+                        let (snapshot, role) = state
+                            .write_builtin_role(
+                                actor,
+                                server,
+                                id,
+                                version(&input.expected_version)?,
+                                Some(fields),
+                            )
+                            .map_err(access_error)?;
                         refresh(router, server, device)?;
-                        return Ok(crate::manage::ok(json!({"version":snapshot.revision.to_string(),"role":role})));
+                        return Ok(crate::manage::ok(
+                            json!({"version":snapshot.revision.to_string(),"role":role}),
+                        ));
                     }
                 } else {
                     return Err(failure(StatusCode::NOT_FOUND, "not_found"));

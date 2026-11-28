@@ -504,7 +504,8 @@ impl FileBrowser {
             .iter()
             .filter_map(|path| self.observe_content(path).ok())
             .collect::<Vec<_>>();
-        let found = self.providers_for_hashes(observed.iter().map(|entry| entry.sha512.as_str()))?;
+        let found =
+            self.providers_for_hashes(observed.iter().map(|entry| entry.sha512.as_str()))?;
         let matches = observed
             .into_iter()
             .filter_map(|entry| {

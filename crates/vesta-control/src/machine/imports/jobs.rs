@@ -628,12 +628,21 @@ impl ImportJobs {
         if binding.host_id != host.to_string() {
             return Err(JobError::FORBIDDEN);
         }
-        super::super::access::require(c, super::super::owners::Actor::Account(account),
-            crate::identity::Capability::HostServersCreate)?;
+        super::super::access::require(
+            c,
+            super::super::owners::Actor::Account(account),
+            crate::identity::Capability::HostServersCreate,
+        )?;
         Ok(account)
     }
 
-    fn authorize_job(&self, c: &Connection, binding: &OwnerBinding, job: &str, kind: Kind) -> JobResult<Uuid> {
+    fn authorize_job(
+        &self,
+        c: &Connection,
+        binding: &OwnerBinding,
+        job: &str,
+        kind: Kind,
+    ) -> JobResult<Uuid> {
         if kind == Kind::Import {
             return self.owner(c, binding);
         }
@@ -644,7 +653,8 @@ impl ImportJobs {
         let allowed: bool = c.query_row(
             "SELECT EXISTS(SELECT 1 FROM machine_import_jobs WHERE job_id=?1 AND kind='create'
              AND account_id=?2 AND COALESCE(json_extract(request,'$.kind'),'new') = 'new')",
-            params![job, binding.account_id], |row| row.get(0),
+            params![job, binding.account_id],
+            |row| row.get(0),
         )?;
         if !allowed {
             return Err(JobError::CREATE_NOT_FOUND);
@@ -1087,10 +1097,12 @@ impl ImportJobs {
 
     /// Candidate IDs are checked again at apply, before creating a directory.
     pub(crate) fn new_server_id(&self) -> JobResult<Uuid> {
-        self.read(|c| loop {
-            let id = Uuid::new_v4();
-            if !server_id_in_use(c, id)? {
-                break Ok(id);
+        self.read(|c| {
+            loop {
+                let id = Uuid::new_v4();
+                if !server_id_in_use(c, id)? {
+                    break Ok(id);
+                }
             }
         })
     }

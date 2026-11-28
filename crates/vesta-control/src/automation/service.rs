@@ -143,14 +143,25 @@ impl Automation {
     pub fn new(db: StateDatabase, port: Arc<dyn ActionPort>) -> Result<Self> {
         db.write(|c| { c.execute_batch("CREATE TABLE IF NOT EXISTS automation_player_visits (uuid TEXT PRIMARY KEY NOT NULL, first_name TEXT NOT NULL, first_seen_at INTEGER NOT NULL) STRICT;")?; Ok(()) })?;
         let audit = AuditLog::new(db.clone())?;
-        Ok(Self { db, port, audit, execution: Default::default() })
+        Ok(Self {
+            db,
+            port,
+            audit,
+            execution: Default::default(),
+        })
     }
-    pub(crate) fn disable_guard(&self) -> std::result::Result<std::sync::MutexGuard<'_, ()>, &'static str> {
+    pub(crate) fn disable_guard(
+        &self,
+    ) -> std::result::Result<std::sync::MutexGuard<'_, ()>, &'static str> {
         self.execution.try_lock().map_err(|_| "server_busy")
     }
 
     fn disabled_in(c: &Connection) -> Result<bool> {
-        Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM server_automation_disabled)", [], |row| row.get(0))?)
+        Ok(c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM server_automation_disabled)",
+            [],
+            |row| row.get(0),
+        )?)
     }
 
     pub(crate) fn mark_disabled(&self) -> Result<()> {
@@ -592,27 +603,27 @@ impl Automation {
     }
 
     fn publish_in(&self, c: &Connection, event: &AutomationEvent) -> Result<Vec<String>> {
-            let mut q = c.prepare(&format!(
-                "SELECT {WORKFLOW_COLUMNS} FROM workflows WHERE enabled=1 ORDER BY id"
-            ))?;
-            let workflows = q
-                .query_map([], workflow_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            let mut runs = Vec::new();
-            for w in workflows {
-                if event.matches_trigger(&w.definition.trigger)
-                    && let Some(id) = self.enqueue(
-                        c,
-                        &w,
-                        &serde_json::json!({"kind":"event","event":event}),
-                        self.now(),
-                        false,
-                    )?
-                {
-                    runs.push(id);
-                }
+        let mut q = c.prepare(&format!(
+            "SELECT {WORKFLOW_COLUMNS} FROM workflows WHERE enabled=1 ORDER BY id"
+        ))?;
+        let workflows = q
+            .query_map([], workflow_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut runs = Vec::new();
+        for w in workflows {
+            if event.matches_trigger(&w.definition.trigger)
+                && let Some(id) = self.enqueue(
+                    c,
+                    &w,
+                    &serde_json::json!({"kind":"event","event":event}),
+                    self.now(),
+                    false,
+                )?
+            {
+                runs.push(id);
             }
-            Ok(runs)
+        }
+        Ok(runs)
     }
     /// Join observation and its matching runs commit together. Never forget visits during retention.
     pub(crate) fn seed_player_history(&self, ids: &[uuid::Uuid]) -> Result<()> {

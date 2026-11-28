@@ -78,10 +78,15 @@ pub(crate) struct WhitelistSyncChange {
 impl WhitelistSyncChange {
     pub(crate) fn record(&self, c: &rusqlite::Connection) -> rusqlite::Result<()> {
         if self.add {
-            c.execute("INSERT OR REPLACE INTO whitelist_sync_members VALUES(?,?)",
-                rusqlite::params![self.uuid, self.name])?;
+            c.execute(
+                "INSERT OR REPLACE INTO whitelist_sync_members VALUES(?,?)",
+                rusqlite::params![self.uuid, self.name],
+            )?;
         } else {
-            c.execute("DELETE FROM whitelist_sync_members WHERE uuid=?", [&self.uuid])?;
+            c.execute(
+                "DELETE FROM whitelist_sync_members WHERE uuid=?",
+                [&self.uuid],
+            )?;
         }
         Ok(())
     }
@@ -397,7 +402,7 @@ impl Operations {
             if let ModerationOrigin::WhitelistSync(change) = origin {
                 repo.connection().execute(
                     "INSERT INTO whitelist_sync_pending VALUES(1,?,?,?,?)",
-                    rusqlite::params![op.summary.id.as_str(),change.uuid,change.name,change.add],
+                    rusqlite::params![op.summary.id.as_str(), change.uuid, change.name, change.add],
                 )?;
             }
             let mut metadata = vec![
@@ -421,7 +426,11 @@ impl Operations {
                 repo.connection(),
                 &AuditRecord::new(
                     if source == WHITELIST_SYNC_SOURCE {
-                        AuditActor::new("vesta-server".into(), WHITELIST_SYNC_SOURCE.into(), source.into())?
+                        AuditActor::new(
+                            "vesta-server".into(),
+                            WHITELIST_SYNC_SOURCE.into(),
+                            source.into(),
+                        )?
                     } else {
                         request_actor(subject)?
                     },

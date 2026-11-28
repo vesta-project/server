@@ -33,11 +33,16 @@ async fn mount_mojang(f: &Fixture, server: Value, manifest_sha1: Option<&str>) -
         ResponseTemplate::new(200).set_body_bytes(detail),
     )
     .await;
-    mount_json(&f.server, "/mc/game/version_manifest_v2.json", json!({
+    mount_json(
+        &f.server,
+        "/mc/game/version_manifest_v2.json",
+        json!({
         "latest":{"release":VERSION},
         "versions":[{"id":VERSION,"type":"release",
             "url":format!("https://piston-meta.mojang.com{route}"),
-            "sha1":manifest_sha1.unwrap_or(&sha1)}]})).await;
+            "sha1":manifest_sha1.unwrap_or(&sha1)}]}),
+    )
+    .await;
     route
 }
 
@@ -179,7 +184,11 @@ async fn previews_without_mojang_objects_are_not_verifiable() {
     let f = Fixture::new(Software::Paper).await;
     let preview = f
         .installer
-        .resolve_preview(Software::Paper, &Selection::default(), &SilentProgressReporter)
+        .resolve_preview(
+            Software::Paper,
+            &Selection::default(),
+            &SilentProgressReporter,
+        )
         .await
         .unwrap();
     assert!(preview.mojang_objects.is_empty());
@@ -193,7 +202,7 @@ async fn previews_without_mojang_objects_are_not_verifiable() {
 
 #[test]
 fn mojang_metadata_urls_are_confined() {
-    use crate::transfer::{Role, validate_family_url};
+    use crate::transfer::{validate_family_url, Role};
     let ok = [
         "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json",
         "https://piston-meta.mojang.com/v1/packages/0123456789abcdef0123456789abcdef01234567/1.21.4.json",

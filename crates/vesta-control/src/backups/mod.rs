@@ -31,7 +31,10 @@ pub mod s3;
 pub mod space;
 pub mod store;
 
-pub use limits::{COLLECTION_SIZE_LIMIT, DISK_SPACE_LOW, ProfileStorage, SNAPSHOT_LIMIT, SNAPSHOT_SIZE_LIMIT, STORAGE_LIMIT, StorageStatus};
+pub use limits::{
+    COLLECTION_SIZE_LIMIT, DISK_SPACE_LOW, ProfileStorage, SNAPSHOT_LIMIT, SNAPSHOT_SIZE_LIMIT,
+    STORAGE_LIMIT, StorageStatus,
+};
 pub use policy::{BackupPolicy, LimitsDocument, PolicyDocument, ProfileDocument};
 pub use restore::{PreparedRestore, recovery_jobs, resolve_recovery_locally};
 
@@ -220,8 +223,15 @@ impl Job {
 /// Finished-job notifications for automation triggers and audit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BackupEvent {
-    Completed { profile: String, job: String },
-    Failed { profile: String, job: String, error_code: String },
+    Completed {
+        profile: String,
+        job: String,
+    },
+    Failed {
+        profile: String,
+        job: String,
+        error_code: String,
+    },
 }
 
 /// Facts the service needs from the rest of the host, supplied by composition.
@@ -1129,7 +1139,10 @@ impl Inner {
         if self.stopping.load(Ordering::Acquire) {
             return Outcome::failed("backup_shutdown_interrupted");
         }
-        if profile.max_snapshot_bytes.is_some_and(|max| summary.total_bytes_processed > max) {
+        if profile
+            .max_snapshot_bytes
+            .is_some_and(|max| summary.total_bytes_processed > max)
+        {
             return Outcome::failed(SNAPSHOT_SIZE_LIMIT);
         }
         // Read every chunk of the new snapshot before promotion or retention.
@@ -1159,14 +1172,23 @@ impl Inner {
             keep_monthly: profile.keep_monthly,
         };
         let plan = if let Some(max) = profile.max_collection_bytes.filter(|_| !fail) {
-            match self.engine.collection_prune_plan(&profile_tag, &summary.snapshot_id, retention, max) {
+            match self.engine.collection_prune_plan(
+                &profile_tag,
+                &summary.snapshot_id,
+                retention,
+                max,
+            ) {
                 Ok(plan) => Some(plan),
                 Err(error) => return Outcome::failed(error.code()),
             }
         } else {
             None
         };
-        let tag = if fail { REJECTED.to_owned() } else { profile_tag.clone() };
+        let tag = if fail {
+            REJECTED.to_owned()
+        } else {
+            profile_tag.clone()
+        };
         let tagging = self
             .disk_budget()
             .map_err(|_| EngineError::DiskSpaceLow)
@@ -1185,9 +1207,17 @@ impl Inner {
         let mut retention_error = None;
         if promoted {
             if let Some(plan) = &plan {
-                retention_error = self.engine.apply_collection_prune(plan).err().map(EngineError::code);
+                retention_error = self
+                    .engine
+                    .apply_collection_prune(plan)
+                    .err()
+                    .map(EngineError::code);
             } else if !retention.is_empty() {
-                retention_error = self.engine.forget(&profile_tag, retention).err().map(EngineError::code);
+                retention_error = self
+                    .engine
+                    .forget(&profile_tag, retention)
+                    .err()
+                    .map(EngineError::code);
             }
         }
         let consistency = match (online, kept) {

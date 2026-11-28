@@ -6,10 +6,7 @@ use super::domain::{
     OperationId, OperationState, OperationSummary, OperationsResult, corrupt, identifier, lock_key,
     text,
 };
-use super::{
-    domain::MAX_PAGE,
-    input::PreparedOperation,
-};
+use super::{domain::MAX_PAGE, input::PreparedOperation};
 use crate::identity::{DeviceId, PrincipalId, Subject};
 use rusqlite::params_from_iter;
 use rusqlite::{Connection, OptionalExtension, Row, params};
