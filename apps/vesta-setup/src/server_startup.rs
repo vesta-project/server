@@ -350,19 +350,18 @@ mod linux {
             return Err("agent installation missing".into());
         }
         run("systemctl", &["--user", "show-environment"])?;
-        if let Some(path) = existing.as_ref() {
-            if crate::platform::linux::read_owned_unit(path, &legacy_unit(r)?)
+        if let Some(path) = existing.as_ref()
+            && crate::platform::linux::read_owned_unit(path, &legacy_unit(r)?)
                 .is_ok_and(|owned| owned)
-            {
-                if run("systemctl", &["--user", "is-active", &name(&r.server_id)?]).is_ok() {
-                    return Err("legacy agent unit is active; stop it deliberately before upgrading its shutdown policy".into());
-                }
-                if !crate::platform::linux::read_owned_unit(path, &legacy_unit(r)?)? {
-                    return Err("agent unit changed while upgrading".into());
-                }
-                fs::remove_file(path).map_err(|e| e.to_string())?;
-                existing = None;
+        {
+            if run("systemctl", &["--user", "is-active", &name(&r.server_id)?]).is_ok() {
+                return Err("legacy agent unit is active; stop it deliberately before upgrading its shutdown policy".into());
             }
+            if !crate::platform::linux::read_owned_unit(path, &legacy_unit(r)?)? {
+                return Err("agent unit changed while upgrading".into());
+            }
+            fs::remove_file(path).map_err(|e| e.to_string())?;
+            existing = None;
         }
         if existing.is_none() {
             crate::platform::linux::ensure_safe_dir(&r.unit_directory)?;
