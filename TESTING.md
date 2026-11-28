@@ -48,6 +48,8 @@ The CI workflow runs for feature PRs and manual validation. The main-push releas
 
 For PRs, reviewed portable protocol paths run tests on Linux, and reviewed native adapters route tests to their OS. Shared Rust source and test changes run on both platforms. Source changes include downstream Cargo packages. CI changes and unknown paths keep both platforms and use the existing Rust scope. Both PR runners still check formatting and compile all selected targets with strict Clippy. Manual and release validation keep the full set of existing checks on both platforms for the selected Rust scope and test the exact commit.
 
+PRs that fall back to the whole workspace build test binaries once per OS. Eight isolated runners per OS execute the resulting exact-name partitions, with one test thread per runner. The build jobs run doctests. Both required Rust checks wait for every build and applicable shard.
+
 Only successful main pushes save trusted Rust build caches. PRs may restore them, and every selected test runs fresh after restore. Cache keys separate OS image, architecture, Rust toolchain, build settings, Cargo inputs, and the pinned launcher revision. Run classifier/workflow regressions with `node --test scripts/change-scope.test.mjs scripts/ci-scope-contract.test.mjs scripts/bootstrap/nightly-workflow.test.mjs`.
 
 The opt-in public release-catalog smoke fetches only bounded official metadata and a signed platform manifest, never installs binaries: set `VESTA_PUBLIC_RELEASE_SMOKE=1`, then run `cargo test --locked -p vesta-update --lib release::official::tests::public_catalog_and_manifest_smoke -- --ignored --exact --nocapture`. The ordinary suite leaves this network check ignored.

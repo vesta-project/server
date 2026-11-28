@@ -42,6 +42,15 @@ test('platform routing affects PR test execution only; both runners keep strict 
   const check = ci.split('      - name: Check all targets\n')[1].split('\n      - name:')[0];
   assert.match(check, /github\.event_name != 'pull_request'/);
 });
+test('full-scope PRs build test executables once per OS, run doctests, and require every shard', () => {
+  assert.match(ci, /pr_rust_shard: \$\{\{ steps.scope.outputs.pr_rust_shard \}\}/);
+  assert.match(ci, /cargo test --workspace --locked --no-run --message-format=json/);
+  assert.match(ci, /cargo test --workspace --locked --doc -- --test-threads=1/);
+  assert.match(ci, /rust-shards:\n\s+needs: \[scope, rust\]\n\s+if: needs.scope.outputs.pr_rust_shard == 'true'/);
+  assert.match(ci, /shard: \[0, 1, 2, 3, 4, 5, 6, 7\]/);
+  assert.match(ci, /rust-required:\n\s+needs: \[scope, rust, rust-shards\]\n\s+if: \$\{\{ !cancelled\(\) \}\}/);
+  assert.match(ci, /if \[\[ \$SHARDED == true \]\]; then\s+test "\$SHARD_RESULT" = success\s+else\s+test "\$SHARD_RESULT" = skipped/);
+});
 test('cache writes require successful protected main, never PR writes, cache errors cannot skip tests', () => {
   const save = ci.split('      - name: Save cache only from successful protected main')[1];
   assert.match(save, /if: success\(\).*github.event_name == 'push'.*github.ref == 'refs\/heads\/main'/);

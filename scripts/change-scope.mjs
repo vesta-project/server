@@ -187,6 +187,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   result.rust_scope=mergeRustScopes(result.rust_scope,process.env.CI_RELEASE_SCOPE || 'none');
   if (process.env.CI_EVENT === 'pull_request' && files !== null && (process.env.CI_RELEASE_SCOPE || 'none') === 'none') {
     Object.assign(result, prRustSelection(files));
+    result.pr_rust_shard = result.rust_scope === 'full' && result.pr_rust_packages === '';
   }
   const output = Object.entries(result).map(([key, value]) => `${key}=${value}\n`).join('');
   if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, output);
