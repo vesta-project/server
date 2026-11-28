@@ -13,7 +13,10 @@ const workspaceRustFile = /^(?:crates\/(modpack-engine|vesta-(?:protocol|state|c
 export function classifyChanges(files) {
   let setup = false, update = false, full = false, server = false, installer = false;
   for (const p of files) {
-    if (p === 'scripts/change-scope.mjs') { full = true; continue; }
+    if (['scripts/change-scope.mjs', 'scripts/rust-test-shards.mjs', 'scripts/fixtures/ci-rust-test-timings.json'].includes(p)) {
+      full = true;
+      continue;
+    }
     if (documentation(p) || bootstrap(p)) continue;
     if (workflow(p)) {
       full = true;
@@ -92,6 +95,16 @@ export function prRustSelection(files) {
     pr_rust_platform: platforms.size === 1 ? [...platforms][0] : 'both',
     pr_rust_packages: [...packages].sort().join(','),
   };
+}
+
+export function prRustShards(scope, selection) {
+  const roots = selection.pr_rust_packages.split(',');
+  const slow = roots.some(root => root === 'vesta-control' || root === 'vesta-transport'
+    || (root.endsWith('+') && !['vesta-agent+', 'vesta-setup+', 'vesta-dev+'].includes(root)));
+  if (!(scope === 'full' && !selection.pr_rust_packages) && !slow) return [];
+  return [['linux', 'ubuntu-24.04', 8], ['windows', 'windows-2025', 12]]
+    .filter(([platform]) => selection.pr_rust_platform === 'both' || selection.pr_rust_platform === platform)
+    .flatMap(([, os, count]) => Array.from({length: count}, (_, shard) => ({os, shard})));
 }
 
 // A '+' root changes production code. Include its transitive consumers, even
@@ -186,8 +199,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const result = files === null ? { rust_scope: 'full', server_release: true, installer_release: true } : classifyChanges(files);
   result.rust_scope=mergeRustScopes(result.rust_scope,process.env.CI_RELEASE_SCOPE || 'none');
   if (process.env.CI_EVENT === 'pull_request' && files !== null && (process.env.CI_RELEASE_SCOPE || 'none') === 'none') {
-    Object.assign(result, prRustSelection(files));
-    result.pr_rust_shard = result.rust_scope === 'full' && result.pr_rust_packages === '';
+    const selection = prRustSelection(files);
+    const shards = prRustShards(result.rust_scope, selection);
+    Object.assign(result, selection, {
+      pr_rust_shard: shards.length > 0,
+      pr_rust_shard_matrix: JSON.stringify({include: shards}),
+      pr_rust_linux_shard_count: shards.filter(shard => shard.os === 'ubuntu-24.04').length,
+      pr_rust_windows_shard_count: shards.filter(shard => shard.os === 'windows-2025').length,
+    });
   }
   const output = Object.entries(result).map(([key, value]) => `${key}=${value}\n`).join('');
   if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, output);

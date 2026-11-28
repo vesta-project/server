@@ -23,7 +23,7 @@ test('required job names remain; no Rust change is explicit, classifier failure 
   assert.match(ci, /name: Require successful scope calculation\n\s+if: needs\.scope\.result != 'success'\n\s+working-directory: \.\n\s+run: exit 1/);
   assert.match(ci, /rust_scope: \$\{\{ steps.scope.outputs.rust_scope \}\}/);
   assert.match(ci, /fetch-depth: 0/);
-  for (const name of ['Checkout pinned shared sandbox source', 'Select verified development toolchain', 'Check formatting', 'Check all targets', 'Run Rust tests', 'Run strict all-target Clippy']) {
+  for (const name of ['Checkout pinned shared sandbox source', 'Select verified development toolchain', 'Select Rust scope', 'Check formatting', 'Check all targets', 'Run strict all-target Clippy']) {
     const step = ci.split(`      - name: ${name}\n`)[1].split('\n      - name:')[0];
     assert.match(step, /needs\.scope\.outputs\.rust_scope != 'none'/, name);
   }
@@ -32,9 +32,7 @@ test('required job names remain; no Rust change is explicit, classifier failure 
 });
 test('platform routing affects PR test execution only; both runners keep strict all-target Clippy', () => {
   const tests = ci.split('      - name: Run Rust tests\n')[1].split('\n      - name:')[0];
-  assert.match(tests, /github\.event_name != 'pull_request' \|\|/);
-  assert.match(tests, /runner\.os == 'Linux' && needs\.scope\.outputs\.pr_rust_platform != 'windows'/);
-  assert.match(tests, /runner\.os == 'Windows' && needs\.scope\.outputs\.pr_rust_platform != 'linux'/);
+  assert.match(tests, /if: steps.packages.outputs.test_mode == 'serial'/);
   assert.match(tests, /--test-threads=1/);
   const lint = ci.split('      - name: Run strict all-target Clippy\n')[1].split('\n      - name:')[0];
   assert.doesNotMatch(lint, /pr_rust_platform/);
@@ -44,10 +42,10 @@ test('platform routing affects PR test execution only; both runners keep strict 
 });
 test('full-scope PRs build test executables once per OS, run doctests, and require every shard', () => {
   assert.match(ci, /pr_rust_shard: \$\{\{ steps.scope.outputs.pr_rust_shard \}\}/);
-  assert.match(ci, /cargo test --workspace --locked --no-run --message-format=json/);
-  assert.match(ci, /cargo test --workspace --locked --doc -- --test-threads=1/);
+  assert.match(ci, /cargo test \$\{\{ steps.packages.outputs.args \}\} --locked --no-run --message-format=json/);
+  assert.match(ci, /cargo test \$\{\{ steps.packages.outputs.args \}\} --locked --doc -- --test-threads=1/);
   assert.match(ci, /rust-shards:\n\s+needs: \[scope, rust\]\n\s+if: needs.scope.outputs.pr_rust_shard == 'true'/);
-  assert.match(ci, /shard: \[0, 1, 2, 3, 4, 5, 6, 7\]/);
+  assert.match(ci, /matrix: \$\{\{ fromJSON\(needs.scope.outputs.pr_rust_shard_matrix\) \}\}/);
   assert.match(ci, /rust-required:\n\s+needs: \[scope, rust, rust-shards\]\n\s+if: \$\{\{ !cancelled\(\) \}\}/);
   assert.match(ci, /if \[\[ \$SHARDED == true \]\]; then\s+test "\$SHARD_RESULT" = success\s+else\s+test "\$SHARD_RESULT" = skipped/);
 });
@@ -69,11 +67,21 @@ test('actual scope shell selects bounded package arguments, unknown values fall 
   const step = ci.split('      - name: Select Rust scope\n')[1].split('\n      - name:')[0];
   const run = step.split('        run: |\n')[1].trimEnd().split('\n').map(l => l.replace(/^          /, '')).join('\n');
   const bash = process.platform === 'win32' ? path.join(process.env.ProgramFiles ?? 'C:/Program Files', 'Git/bin/bash.exe') : 'bash';
-  for (const [scope, expected] of [['setup','-p vesta-setup'],['update','-p vesta-update'],['setup-update','-p vesta-setup -p vesta-update'],['full','--workspace'],['','--workspace'],['$(exit 99)','--workspace']]) {
+  const cases = [
+    ['setup', '-p vesta-setup', 'Linux', '', '', 'serial'],
+    ['update', '-p vesta-update', 'Windows', 'linux', '0', 'skip'],
+    ['setup-update', '-p vesta-setup -p vesta-update', 'Linux', 'both', '8', 'sharded'],
+    ['full', '--workspace', 'Windows', 'windows', '12', 'sharded'],
+    ['', '--workspace', 'Linux', 'windows', '0', 'skip'],
+    ['$(exit 99)', '--workspace', 'Windows', '', '', 'serial'],
+  ];
+  for (const [scope, expected, runner, platform, shards, mode] of cases) {
     const file = path.join(temp, `output-${expected.length}-${scope.length}.txt`).replaceAll('\\','/');
     await rm(file, {force:true});
-    const result = spawnSync(bash, ['-e','-c',run], {encoding:'utf8',env:{...process.env,SCOPE:scope,GITHUB_OUTPUT:file},timeout:5000});
+    const result = spawnSync(bash, ['-e','-c',run], {encoding:'utf8',env:{
+      ...process.env, SCOPE:scope, PR_PACKAGES:'', GITHUB_OUTPUT:file, RUNNER_OS:runner, TEST_PLATFORM:platform, SHARD_COUNT:shards,
+    },timeout:5000});
     assert.equal(result.status, 0, result.stderr);
-    assert.equal((await readFile(file,'utf8')).trim(), `args=${expected}`);
+    assert.equal((await readFile(file,'utf8')).trim(), `args=${expected}\ntest_mode=${mode}`);
   }
 });

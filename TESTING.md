@@ -48,7 +48,7 @@ The CI workflow runs for feature PRs and manual validation. The main-push releas
 
 For PRs, reviewed portable protocol paths run tests on Linux, and reviewed native adapters route tests to their OS. Shared Rust source and test changes run on both platforms. Source changes include downstream Cargo packages. CI changes and unknown paths keep both platforms and use the existing Rust scope. Both PR runners still check formatting and compile all selected targets with strict Clippy. Manual and release validation keep the full set of existing checks on both platforms for the selected Rust scope and test the exact commit.
 
-PRs that fall back to the whole workspace build test binaries once per OS. Eight isolated runners per OS execute the resulting exact-name partitions, with one test thread per runner. The build jobs run doctests. Both required Rust checks wait for every build and applicable shard.
+Whole-workspace PRs and large affected-package selections build test binaries once per selected OS. Up to eight Ubuntu and twelve Windows runners execute the exact-name partitions, with one test thread per runner. Historical durations spread the slow cases across shards. The build jobs run doctests. Both required Rust checks wait for every build and applicable shard.
 
 Only successful main pushes save trusted Rust build caches. PRs may restore them, and every selected test runs fresh after restore. Cache keys separate OS image, architecture, Rust toolchain, build settings, Cargo inputs, and the pinned launcher revision. Run classifier/workflow regressions with `node --test scripts/change-scope.test.mjs scripts/ci-scope-contract.test.mjs scripts/bootstrap/nightly-workflow.test.mjs`.
 

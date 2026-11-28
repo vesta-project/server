@@ -30,6 +30,29 @@ test('shared, unknown, or build-contract edits fall back even in a portable PR',
   }
 });
 
+test('editing test sharding logic or timings exercises the full two-platform PR gate', () => {
+  for (const file of ['scripts/rust-test-shards.mjs', 'scripts/fixtures/ci-rust-test-timings.json']) {
+    assert.deepEqual(classifyChanges([file]), {rust_scope: 'full', server_release: false, installer_release: false});
+    assert.deepEqual(scopeModule.prRustSelection([file]), {pr_rust_platform: 'both', pr_rust_packages: ''});
+  }
+});
+
+test('shards cover whole-workspace and slow affected suites on the selected platforms', () => {
+  const plan = files => scopeModule.prRustShards(classifyChanges(files).rust_scope, scopeModule.prRustSelection(files));
+  const indexes = count => Array.from({length: count}, (_, index) => index);
+  const whole = plan(['.github/workflows/ci.yml']);
+  assert.deepEqual(whole.filter(shard => shard.os === 'ubuntu-24.04').map(shard => shard.shard), indexes(8));
+  assert.deepEqual(whole.filter(shard => shard.os === 'windows-2025').map(shard => shard.shard), indexes(12));
+  assert.ok(plan(['crates/vesta-protocol/src/framing.rs']).every(shard => shard.os === 'ubuntu-24.04'));
+  assert.equal(plan(['crates/vesta-protocol/src/framing.rs']).length, 8);
+  assert.ok(plan(['crates/vesta-control/src/shutdown_signal_windows.rs']).every(shard => shard.os === 'windows-2025'));
+  assert.equal(plan(['crates/vesta-control/src/shutdown_signal_windows.rs']).length, 12);
+  assert.equal(plan(['crates/vesta-transport/tests/https.rs']).length, 20);
+  assert.deepEqual(plan(['apps/vesta-setup/src/linux_acl.rs']), []);
+  assert.deepEqual(plan(['crates/vesta-protocol/tests/discovery.rs']), []);
+  assert.deepEqual(plan(['README.md']), []);
+});
+
 test('source changes include downstream target-specific, development and build dependencies', () => {
   const pkg = (name, dir, dependencies = []) => ({name, manifest_path: `/workspace/${dir}/Cargo.toml`, dependencies});
   const dependency = (dir, kind, target = null) => ({path: `/workspace/${dir}`, kind, target});
