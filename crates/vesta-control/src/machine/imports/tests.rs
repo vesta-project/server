@@ -1018,13 +1018,21 @@ fn root_loader_observes_local_changes_without_restart() {
     fs::create_dir(&child).unwrap();
     let b = browser(temp.path());
     let config = root_config(&child);
+    let expected = display(&child.canonicalize().unwrap());
+    assert!(
+        !b.roots()
+            .unwrap()
+            .roots
+            .iter()
+            .any(|r| r.display_path == expected)
+    );
     b.set_root_loader(move || Ok(vec![config.clone()]));
     let roots = b.roots().unwrap();
     assert!(
         roots
             .roots
             .iter()
-            .any(|r| r.display_path == display(&child))
+            .any(|r| r.display_path == expected && r.readable)
     );
 }
 

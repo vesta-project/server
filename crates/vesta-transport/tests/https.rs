@@ -3197,6 +3197,14 @@ fn management_console_redacts_truncated_and_split_live_credentials_over_tls_and_
     let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
     let token = management_session(&f, &device, &key);
     let generation = management_start_inert(&f, &token);
+    // A tail page is byte-bounded and can omit early boundary lines once the
+    // command has emitted several maximum-length lines. Page forward from here.
+    let before = f.request("GET", "/api/v3/manage/console?limit=1", b"", Some(&token));
+    assert_eq!(before.status, 200);
+    let mut after = before.json()["data"]["latest_cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let command = management_mutation(
         &f,
         &token,
@@ -3211,14 +3219,9 @@ fn management_console_redacts_truncated_and_split_live_credentials_over_tls_and_
         command.json()["data"]["operation_id"].as_str().unwrap(),
     );
     let until = Instant::now() + Duration::from_secs(10);
-    let mut after = String::new();
     let mut lines = Vec::new();
     loop {
-        let path = if after.is_empty() {
-            "/api/v3/manage/console?limit=200".to_owned()
-        } else {
-            format!("/api/v3/manage/console?cursor={after}&limit=200")
-        };
+        let path = format!("/api/v3/manage/console?cursor={after}&limit=200");
         let reply = f.request("GET", &path, b"", Some(&token));
         assert_eq!(reply.status, 200);
         reply.hides(&token);
