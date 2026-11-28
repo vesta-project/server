@@ -59,6 +59,7 @@ fn legacy_whitelist_toggle_migrates_to_the_owner_role() {
                     json_remove(settings_json,'$.auto_whitelist_roles'),'$.sync_whitelist',json(?))",
                 [if enabled { "true" } else { "false" }],
             )?;
+            c.execute_batch(support::REMOVE_V38_SCHEMA)?;
             c.execute_batch("PRAGMA user_version=34;")?;
             Ok(())
         }).unwrap();

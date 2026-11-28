@@ -150,11 +150,18 @@ pub fn remove_directory_link(link: &Path) -> io::Result<()> {
     }
 }
 
+macro_rules! v38_schema_removal {
+    () => {
+        "ALTER TABLE file_trash DROP COLUMN directory_restore_pending;"
+    };
+}
+pub const REMOVE_V38_SCHEMA: &str = v38_schema_removal!();
+
 // One list for all fixtures that rewind past V31. Production migrations must
 // still reject duplicate tables; the fixture must actually remove later schema.
 macro_rules! without_v31_schema {
     ($earlier:literal) => {
-        concat!("DROP TABLE server_automation_disabled; ALTER TABLE file_trash DROP COLUMN batch_id; ALTER TABLE file_trash DROP COLUMN directory_identity; ALTER TABLE file_trash DROP COLUMN directory; DROP TABLE management_invitation_uses; DROP TABLE whitelist_sync_actor; DROP TABLE whitelist_sync_members;", $earlier)
+        concat!(v38_schema_removal!(), "DROP TABLE server_automation_disabled; ALTER TABLE file_trash DROP COLUMN batch_id; ALTER TABLE file_trash DROP COLUMN directory_identity; ALTER TABLE file_trash DROP COLUMN directory; DROP TABLE management_invitation_uses; DROP TABLE whitelist_sync_actor; DROP TABLE whitelist_sync_members;", $earlier)
     };
 }
 #[allow(dead_code)]
