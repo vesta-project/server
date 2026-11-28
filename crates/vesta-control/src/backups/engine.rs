@@ -650,7 +650,7 @@ impl Engine {
             tags: tags.to_vec(),
             parent_id,
             label: None,
-            kept: tags.iter().any(|t| t.starts_with(SAFETY_PREFIX)),
+            kept: false,
         })
         .map_err(|_| EngineError::Failed)?;
         let total = added

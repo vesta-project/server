@@ -917,6 +917,45 @@ fn interrupted_backup_never_publishes_a_snapshot() {
 }
 
 #[test]
+fn safety_retention_prunes_automatic_points_and_respects_a_manual_keep() {
+    let source = game();
+    let engine = Engine::new(Box::new(MemStore::default()));
+    engine.init().unwrap();
+    let ignore = Ignore::parse("").unwrap();
+    let tag = "safety=p".to_owned();
+    let manual = engine
+        .backup(source.path(), &ignore, std::slice::from_ref(&tag), None)
+        .unwrap()
+        .snapshot_id;
+    engine
+        .point_update(
+            &manual,
+            &PointUpdate {
+                label: None,
+                kept: Some(true),
+            },
+        )
+        .unwrap();
+    for _ in 0..7 {
+        engine
+            .backup(source.path(), &ignore, std::slice::from_ref(&tag), None)
+            .unwrap();
+    }
+    engine
+        .forget(
+            &tag,
+            Retention {
+                keep_last: 5,
+                ..Retention::default()
+            },
+        )
+        .unwrap();
+    let remaining = engine.snapshots(&tag).unwrap();
+    assert!((5..=6).contains(&remaining.len()));
+    assert!(remaining.iter().any(|point| point.id == manual));
+}
+
+#[test]
 fn lineage_branch_restore_keep_and_reparent() {
     let source = game();
     let store = MemStore::default();
@@ -950,7 +989,7 @@ fn lineage_branch_restore_keep_and_reparent() {
     let history = engine.history().unwrap();
     let tip = history.points.iter().find(|p| p.id == safety).unwrap();
     // A safety point names the profile whose restore took it, so it can be restored again.
-    assert!(tip.kept && tip.safety && tip.profile.as_deref() == Some("p"));
+    assert!(!tip.kept && tip.safety && tip.profile.as_deref() == Some("p"));
     assert_eq!(tip.parent_id.as_deref(), Some(b.as_str()));
     engine
         .apply(&a, source.path(), &["world".into()], &ignore, &[], None)
