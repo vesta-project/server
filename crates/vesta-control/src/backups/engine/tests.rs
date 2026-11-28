@@ -1068,10 +1068,33 @@ fn lineage_branch_restore_keep_and_reparent() {
             .iter()
             .any(|p| p.id == safety)
     );
+    engine
+        .point_update(
+            &safety,
+            &PointUpdate {
+                kept: Some(true),
+                ..PointUpdate::default()
+            },
+        )
+        .unwrap();
     let newer_safety = engine
         .backup(source.path(), &ignore, &["safety=p".into()], None)
         .unwrap()
         .snapshot_id;
+    let mut older = engine
+        .all()
+        .unwrap()
+        .into_iter()
+        .find(|(id, _)| id == &safety)
+        .unwrap()
+        .1;
+    older.time_ms = 0;
+    store
+        .put(
+            &format!("tags/{safety}"),
+            &serde_json::to_vec(&older).unwrap(),
+        )
+        .unwrap();
     engine
         .forget(
             "safety=p",
