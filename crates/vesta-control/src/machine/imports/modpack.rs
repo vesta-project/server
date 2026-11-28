@@ -186,8 +186,7 @@ impl CreateUpload {
         let stored = jobs.write(|c| {
             let account = jobs.owner(c, &self.owner)?;
             let device = Uuid::parse_str(&self.owner.device_id).map_err(|_| JobError::FORBIDDEN)?;
-            if !crate::machine::owners::active_device_in(c, device)?
-                .is_some_and(|device| device.account_id == account)
+            if crate::machine::owners::active_device_in(c, device)?.is_none_or(|device| device.account_id != account)
             {
                 return Err(JobError::FORBIDDEN);
             }

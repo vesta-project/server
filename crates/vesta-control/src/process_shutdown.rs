@@ -109,6 +109,68 @@ fn earliest(a: Option<ShutdownRequest>, b: Option<ShutdownRequest>) -> Option<Sh
     }
 }
 
+/// Wait for the exact child we spawned. A confirmed wrapper shutdown is forwarded
+/// once per reason, and completion is reported only after try_wait reaps it.
+/// The caller must keep ExitWatchdog alive throughout this wait.
+pub fn wait_owned_child(
+    child: &mut std::process::Child,
+    observer: &ShutdownObserver,
+) -> std::process::ExitStatus {
+    let mut forwarded = None;
+    let mut reported = false;
+    loop {
+        match child.try_wait() {
+            Ok(Some(exit)) => return exit,
+            Ok(None) => (),
+            Err(_) => {
+                if !reported {
+                    eprintln!("shutdown_child_observation_failed; retaining child ownership");
+                    reported = true;
+                }
+            }
+        }
+        if let Some(request) = observer.current_request()
+            && forwarded != Some(request.reason)
+            && notify_owned_child(child, request.reason)
+        {
+            forwarded = Some(request.reason);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+/// Child is still owned and unreaped: its PID cannot be reused while signaling.
+fn notify_owned_child(child: &mut std::process::Child, reason: ShutdownReason) -> bool {
+    if !matches!(child.try_wait(), Ok(None)) {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        #[allow(unsafe_code)]
+        fn signal_owned(pid: u32, reason: ShutdownReason) -> bool {
+            let Ok(pid) = i32::try_from(pid) else {
+                return false;
+            };
+            // SAFETY: caller retains the live unreaped Child for this exact PID.
+            let signal = if reason == ShutdownReason::Interrupt {
+                libc::SIGINT
+            } else {
+                libc::SIGTERM
+            };
+            unsafe { libc::kill(pid, signal) == 0 }
+        }
+        signal_owned(child.id(), reason)
+    }
+    #[cfg(windows)]
+    {
+        crate::shutdown_signal::notify_owned_child(child.id(), reason)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (child, reason);
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,66 +275,5 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-    }
-}
-
-/// Wait for the exact child we spawned. A confirmed wrapper shutdown is forwarded
-/// once per reason, and completion is reported only after try_wait reaps it.
-/// The caller must keep ExitWatchdog alive throughout this wait.
-pub fn wait_owned_child(
-    child: &mut std::process::Child,
-    observer: &ShutdownObserver,
-) -> std::process::ExitStatus {
-    let mut forwarded = None;
-    let mut reported = false;
-    loop {
-        match child.try_wait() {
-            Ok(Some(exit)) => return exit,
-            Ok(None) => (),
-            Err(_) => {
-                if !reported {
-                    eprintln!("shutdown_child_observation_failed; retaining child ownership");
-                    reported = true;
-                }
-            }
-        }
-        if let Some(request) = observer.current_request() {
-            if forwarded != Some(request.reason) && notify_owned_child(child, request.reason) {
-                forwarded = Some(request.reason);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-/// Child is still owned and unreaped: its PID cannot be reused while signaling.
-fn notify_owned_child(child: &mut std::process::Child, reason: ShutdownReason) -> bool {
-    if !matches!(child.try_wait(), Ok(None)) {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        #[allow(unsafe_code)]
-        fn signal_owned(pid: u32, reason: ShutdownReason) -> bool {
-            let Ok(pid) = i32::try_from(pid) else {
-                return false;
-            };
-            // SAFETY: caller retains the live unreaped Child for this exact PID.
-            let signal = if reason == ShutdownReason::Interrupt {
-                libc::SIGINT
-            } else {
-                libc::SIGTERM
-            };
-            unsafe { libc::kill(pid, signal) == 0 }
-        }
-        signal_owned(child.id(), reason)
-    }
-    #[cfg(windows)]
-    {
-        crate::shutdown_signal::notify_owned_child(child.id(), reason)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (child, reason);
-        false
     }
 }

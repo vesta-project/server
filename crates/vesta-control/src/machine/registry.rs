@@ -255,10 +255,10 @@ impl HostState {
             let mut entries = Vec::new();
             for id in ids {
                 let id = uuid(id)?;
-                if let Some(role) = effective_role_in(c, account, id)? {
-                    if let Some(entry) = server_in(c, id)? {
-                        entries.push((entry, role));
-                    }
+                if let Some(role) = effective_role_in(c, account, id)?
+                    && let Some(entry) = server_in(c, id)?
+                {
+                    entries.push((entry, role));
                 }
             }
             Ok(entries)

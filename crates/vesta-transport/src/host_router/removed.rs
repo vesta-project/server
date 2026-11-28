@@ -60,22 +60,23 @@ pub(super) fn removed_routes(
         };
         return match removed::list_page(state, servers, device.account_id, cursor) {
             Ok(mut value) => {
-                if let Ok(facts) = jobs.server_facts() {
-                    if let Some(entries) = value["servers"].as_array_mut() {
-                        for entry in entries {
-                            let id = entry["serverId"]
-                                .as_str()
-                                .and_then(|id| Uuid::parse_str(id).ok());
-                            if let Some(bytes) = id.and_then(|id| router.storage.removed_size(id)) {
-                                entry["bytes"] = json!(bytes);
-                            }
-                            if let Some(fact) = id.and_then(|id| facts.get(&id)) {
-                                entry["minecraftVersion"] = json!(fact.minecraft_version);
-                                entry["software"] =
-                                    json!(fact.software.as_ref().map(
-                                        |(kind, version)| json!({"kind":kind,"version":version})
-                                    ));
-                            }
+                if let Ok(facts) = jobs.server_facts()
+                    && let Some(entries) = value["servers"].as_array_mut()
+                {
+                    for entry in entries {
+                        let id = entry["serverId"]
+                            .as_str()
+                            .and_then(|id| Uuid::parse_str(id).ok());
+                        if let Some(bytes) = id.and_then(|id| router.storage.removed_size(id)) {
+                            entry["bytes"] = json!(bytes);
+                        }
+                        if let Some(fact) = id.and_then(|id| facts.get(&id)) {
+                            entry["minecraftVersion"] = json!(fact.minecraft_version);
+                            entry["software"] = json!(
+                                fact.software
+                                    .as_ref()
+                                    .map(|(kind, version)| json!({"kind":kind,"version":version}))
+                            );
                         }
                     }
                 }
@@ -185,10 +186,9 @@ pub(super) fn dispatch(router: &HostRouter, device: &Device, path: &str, bytes: 
         entry.is_some_and(|entry| {
             entry.state == vesta_control::machine::registry::ServerState::Disabled
         })
-    }) {
-        if let Err(reply) = enablement::finish_worker(router, id, Duration::from_secs(3)) {
-            return reply;
-        }
+    }) && let Err(reply) = enablement::finish_worker(router, id, Duration::from_secs(3))
+    {
+        return reply;
     }
     let (record, complete) = match removed::prepare(
         state,

@@ -259,6 +259,23 @@ impl HostAccounts {
     }
 }
 
+#[cfg(feature = "test-support")]
+impl HostAccounts {
+    pub fn test_profile(state: HostState, account: Uuid, name: &str) -> Self {
+        let verifier = MinecraftChallenges::test_profile(
+            ServerUuid::from_uuid(state.snapshot().unwrap().host_id).unwrap(),
+            MinecraftUuid::from_uuid(account).unwrap(),
+            MinecraftName::parse(name).unwrap(),
+        );
+        Self {
+            state,
+            verifier,
+            pending: HashMap::new(),
+            proofs: HashMap::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,22 +323,5 @@ mod tests {
                 .consume("live", &scope, Ok)
                 .is_err()
         );
-    }
-}
-
-#[cfg(feature = "test-support")]
-impl HostAccounts {
-    pub fn test_profile(state: HostState, account: Uuid, name: &str) -> Self {
-        let verifier = MinecraftChallenges::test_profile(
-            ServerUuid::from_uuid(state.snapshot().unwrap().host_id).unwrap(),
-            MinecraftUuid::from_uuid(account).unwrap(),
-            MinecraftName::parse(name).unwrap(),
-        );
-        Self {
-            state,
-            verifier,
-            pending: HashMap::new(),
-            proofs: HashMap::new(),
-        }
     }
 }

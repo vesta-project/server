@@ -56,6 +56,7 @@ struct Roles {
     remove: Vec<String>,
     expected_version: String,
 }
+#[allow(clippy::too_many_arguments)]
 fn user_row(
     state: &vesta_control::machine::HostState,
     server: Uuid,
@@ -102,6 +103,7 @@ fn refresh(router: &HostRouter, server: Uuid, device: &Device) -> Result<(), Rep
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch(
     router: &HostRouter,
     device: &Device,
@@ -189,10 +191,7 @@ fn handle(
                 Err(e) => access_error(e),
             },
             ("POST", "invitations") if query.is_none() => {
-                let input: invites::CreateInvite = match parse(bytes) {
-                    Ok(v) => v,
-                    Err(e) => return Err(e),
-                };
+                let input: invites::CreateInvite = parse(bytes)?;
                 match invites::issue(state, actor, server, fingerprint, input) {
                     Ok(v) => crate::manage::ok(v),
                     Err(e) => access_error(e),

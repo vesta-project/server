@@ -71,7 +71,7 @@ pub enum LinkPollResponse {
         #[serde(rename = "deviceId")]
         device_id: Uuid,
     },
-    Pending(LinkStatus),
+    Pending(Box<LinkStatus>),
 }
 struct Pending {
     request: SignedLinkRequest,

@@ -84,9 +84,6 @@ pub(super) fn install(
     }
 }
 
-/// The installation id the software service would record: the installer's
-/// instance directory, when the trusted artifacts show it.
-
 fn failed(error: &crate::packs::ReleaseError) -> &'static str {
     match error.code() {
         "content_provider_unavailable"

@@ -271,12 +271,11 @@ pub fn list(root: &Path) -> JobResult<Vec<Removed>> {
         {
             continue;
         }
-        if let Ok(bytes) = std::fs::read(manifest) {
-            if let Ok(record) = serde_json::from_slice::<Removed>(&bytes) {
-                if record.path(root) == entry.path() {
-                    out.push(record);
-                }
-            }
+        if let Ok(bytes) = std::fs::read(manifest)
+            && let Ok(record) = serde_json::from_slice::<Removed>(&bytes)
+            && record.path(root) == entry.path()
+        {
+            out.push(record);
         }
     }
     out.sort_by_key(|r| r.removed_ms);

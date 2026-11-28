@@ -957,11 +957,11 @@ impl Driver {
             }
             if self.shared.stopping.load(Ordering::Acquire) {
                 self.owner.stop_claiming();
-                if self.shared.system_shutdown.load(Ordering::Acquire) {
-                    if let Err(error) = self.advance_system_shutdown() {
-                        self.shared.error(error.code());
-                        first_failure.get_or_insert(error);
-                    }
+                if self.shared.system_shutdown.load(Ordering::Acquire)
+                    && let Err(error) = self.advance_system_shutdown()
+                {
+                    self.shared.error(error.code());
+                    first_failure.get_or_insert(error);
                 }
                 if !self.game.is_local()
                     && !self.shared.system_admission_closed.load(Ordering::Acquire)

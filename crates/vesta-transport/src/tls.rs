@@ -102,9 +102,6 @@ impl Material {
             state.current.fingerprint.clone(),
         ))
     }
-    pub(crate) fn config(&self) -> Result<Arc<rustls::ServerConfig>, TransportError> {
-        Ok(self.lock()?.current.config.clone())
-    }
     pub(crate) fn fingerprint(&self) -> Result<String, TransportError> {
         Ok(self.lock()?.current.fingerprint.clone())
     }

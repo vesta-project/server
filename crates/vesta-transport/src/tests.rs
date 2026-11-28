@@ -849,7 +849,7 @@ fn tls_reload_reads_and_validates_without_holding_the_handshake_lock() {
                 material.state.try_lock().is_ok(),
                 "state locked during read"
             );
-            assert!(material.config().is_ok());
+            assert!(material.accept_config().is_ok());
             observed = true;
             tls::load(listener)
         })

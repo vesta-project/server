@@ -125,10 +125,10 @@ impl ShutdownSignal {
         #[cfg(windows)]
         {
             let native = windows::Registration::open(state.clone())?;
-            return Ok(Self {
+            Ok(Self {
                 state,
                 _native: native,
-            });
+            })
         }
         #[cfg(not(any(unix, windows)))]
         {

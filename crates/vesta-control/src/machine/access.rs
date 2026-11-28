@@ -86,10 +86,10 @@ fn check_target(c: &Connection, actor: Actor, account: Uuid) -> Result<()> {
     if host_role_in(c, account)?.is_some() {
         return Err(reject(Code::Forbidden));
     }
-    if let Actor::Account(caller) = actor {
-        if caller == account || !stored(c, account)?.is_subset(&capabilities_in(c, actor)?) {
-            return Err(reject(Code::Forbidden));
-        }
+    if let Actor::Account(caller) = actor
+        && (caller == account || !stored(c, account)?.is_subset(&capabilities_in(c, actor)?))
+    {
+        return Err(reject(Code::Forbidden));
     }
     Ok(())
 }

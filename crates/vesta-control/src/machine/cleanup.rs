@@ -154,6 +154,7 @@ fn expand(request: &Request, active: &[Uuid], removed: &[Uuid]) -> Vec<Item> {
 
 /// The host writer serializes removed-server lifecycle transitions and import
 /// admission. The worker callback must only touch the separate server database.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     host: &HostState,
     servers: &Path,

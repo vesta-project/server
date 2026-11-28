@@ -423,7 +423,10 @@ fn disk_page(
             continue;
         }
         let text = log_text(line);
-        let length = text.floor_char_boundary(MAX_LINE_BYTES.min(text.len()));
+        let mut length = MAX_LINE_BYTES.min(text.len());
+        while !text.is_char_boundary(length) {
+            length -= 1;
+        }
         if bytes + length > MAX_PAGE_BYTES {
             break;
         }

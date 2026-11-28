@@ -861,12 +861,11 @@ impl ImportJobs {
             blockers.remove("software_unresolved");
         }
 
-        if let Some(launch) = &detected.launch {
-            if launch.kind == "java_argfile"
-                && super::arguments::parse(&source, &source.join(&launch.relative_path)).is_err()
-            {
-                blockers.insert("launch_arguments_unsupported");
-            }
+        if let Some(launch) = &detected.launch
+            && launch.kind == "java_argfile"
+            && super::arguments::parse(&source, &source.join(&launch.relative_path)).is_err()
+        {
+            blockers.insert("launch_arguments_unsupported");
         }
         let (processes, process_state) = self.0.env.processes(std::slice::from_ref(&source));
         if processes

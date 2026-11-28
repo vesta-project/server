@@ -150,10 +150,11 @@ pub(crate) struct OpenedFolder {
     pub(crate) identity: String,
 }
 
+type ReloadRoots = Arc<dyn Fn() -> Result<Vec<ImportRootConfig>, ImportError> + Send + Sync>;
+
 pub struct FolderBrowser {
     roots: RwLock<Roots>,
-    reload:
-        RwLock<Option<Arc<dyn Fn() -> Result<Vec<ImportRootConfig>, ImportError> + Send + Sync>>>,
+    reload: RwLock<Option<ReloadRoots>>,
     protected: Vec<PathBuf>,
     #[cfg(target_os = "linux")]
     prepared: Option<(PathBuf, u32)>,
@@ -793,7 +794,7 @@ fn filesystem_roots() -> Vec<ImportRootConfig> {
 fn filesystem_roots() -> Vec<ImportRootConfig> {
     // Probe letters instead of GetLogicalDrives: this crate denies unsafe_code.
     (b'A'..=b'Z')
-        .map(|b| char::from(b))
+        .map(char::from)
         .filter(|letter| fs::metadata(format!("{letter}:\\")).is_ok())
         .map(|letter| ImportRootConfig {
             root_id: format!("{FILESYSTEM_ROOT_PREFIX}-{}", letter.to_ascii_lowercase()),

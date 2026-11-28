@@ -332,7 +332,10 @@ fn restore_inner(
                 break;
             }
             let extra = if suffix == 1 { " (restored)".into() } else { format!(" (restored {suffix})") };
-            let limit = base.floor_char_boundary(128 - extra.len());
+            let mut limit = base.len().min(128 - extra.len());
+            while !base.is_char_boundary(limit) {
+                limit -= 1;
+            }
             name = format!("{}{extra}", base[..limit].trim_end());
         }
         let reservations = if reservations_table {
@@ -438,10 +441,10 @@ pub(super) fn plain_path(path: &Path) -> JobResult<()> {
 
 pub(super) fn ensure_directory(path: &Path) -> JobResult<()> {
     plain_path(path.parent().ok_or(JobError::UNAVAILABLE)?)?;
-    if let Err(error) = fs::create_dir(path) {
-        if error.kind() != std::io::ErrorKind::AlreadyExists {
-            return Err(JobError::UNAVAILABLE);
-        }
+    if let Err(error) = fs::create_dir(path)
+        && error.kind() != std::io::ErrorKind::AlreadyExists
+    {
+        return Err(JobError::UNAVAILABLE);
     }
     plain_path(path)
 }

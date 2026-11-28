@@ -488,20 +488,20 @@ async fn serve(
             let mut core = lock(&core);
             if system_stop {
                 core.observe_state();
-                if let Some((generation, receipt)) = &mut delivery {
-                    if let Some(result) = receipt.try_result() {
-                        let generation = *generation;
-                        let delivered = result.is_ok();
-                        core.stop_delivered(generation, delivered);
-                        if delivered {
-                            if core.process.acknowledge_guarded_stop(generation).is_err() {
-                                delivery_failed = true;
-                            }
-                        } else {
+                if let Some((generation, receipt)) = &mut delivery
+                    && let Some(result) = receipt.try_result()
+                {
+                    let generation = *generation;
+                    let delivered = result.is_ok();
+                    core.stop_delivered(generation, delivered);
+                    if delivered {
+                        if core.process.acknowledge_guarded_stop(generation).is_err() {
                             delivery_failed = true;
                         }
-                        delivery = None;
+                    } else {
+                        delivery_failed = true;
                     }
+                    delivery = None;
                 }
                 let snapshot = core.process.snapshot();
                 if delivery.is_none()
@@ -579,10 +579,10 @@ async fn serve(
         {
             return Err("supervisor_shutdown_unproven");
         }
-        if let Some(mut responder) = core.offline.take() {
-            if responder.close().is_err() {
-                return Err("offline_release_uncertain");
-            }
+        if let Some(mut responder) = core.offline.take()
+            && responder.close().is_err()
+        {
+            return Err("offline_release_uncertain");
         }
         let snapshot = core.process.snapshot();
         record::write_shutdown(

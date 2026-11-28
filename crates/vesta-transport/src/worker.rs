@@ -970,49 +970,47 @@ pub(crate) fn dispatch_host(
             .headers()
             .get("content-type")
             .is_some_and(|v| v == "application/json")
+        && let crate::ReplyBody::Bytes(bytes) = reply.body_mut()
+        && let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes)
     {
-        if let crate::ReplyBody::Bytes(bytes) = reply.body_mut() {
-            if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) {
-                fn rewrite(v: &mut serde_json::Value, server: uuid::Uuid) {
-                    match v {
-                        serde_json::Value::Object(map) => {
-                            for (key, value) in map {
-                                if key == "server_id" {
-                                    *value = serde_json::json!(server);
-                                } else {
-                                    rewrite(value, server)
-                                }
-                            }
+        fn rewrite(v: &mut serde_json::Value, server: uuid::Uuid) {
+            match v {
+                serde_json::Value::Object(map) => {
+                    for (key, value) in map {
+                        if key == "server_id" {
+                            *value = serde_json::json!(server);
+                        } else {
+                            rewrite(value, server)
                         }
-                        serde_json::Value::Array(a) => {
-                            for v in a {
-                                rewrite(v, server)
-                            }
-                        }
-                        serde_json::Value::String(s) if !s.contains("/v1/servers/") => {
-                            for (old, new) in [
-                                ("/api/v3/manage/", "manage/"),
-                                ("/api/v2/pack/", "pack/"),
-                                ("/resource-packs/", "resource-packs/"),
-                            ] {
-                                if let Some(at) = s.find(old) {
-                                    s.replace_range(
-                                        at..at + old.len(),
-                                        &format!("/v1/servers/{server}/{new}"),
-                                    );
-                                    break;
-                                }
-                            }
-                        }
-                        _ => {}
                     }
                 }
-                rewrite(&mut value, server);
-                *bytes = serde_json::to_vec(&value).unwrap().into();
-                let len = bytes.len();
-                reply.headers_mut().insert("content-length", len.into());
+                serde_json::Value::Array(a) => {
+                    for v in a {
+                        rewrite(v, server)
+                    }
+                }
+                serde_json::Value::String(s) if !s.contains("/v1/servers/") => {
+                    for (old, new) in [
+                        ("/api/v3/manage/", "manage/"),
+                        ("/api/v2/pack/", "pack/"),
+                        ("/resource-packs/", "resource-packs/"),
+                    ] {
+                        if let Some(at) = s.find(old) {
+                            s.replace_range(
+                                at..at + old.len(),
+                                &format!("/v1/servers/{server}/{new}"),
+                            );
+                            break;
+                        }
+                    }
+                }
+                _ => {}
             }
         }
+        rewrite(&mut value, server);
+        *bytes = serde_json::to_vec(&value).unwrap().into();
+        let len = bytes.len();
+        reply.headers_mut().insert("content-length", len.into());
     }
     reply
 }

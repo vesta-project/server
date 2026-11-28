@@ -16,6 +16,7 @@ const MAX_ACTIVE: usize = 2;
 const RATE_BURST: u32 = 60;
 const REFILL_INTERVAL: Duration = Duration::from_secs(1);
 const NONCE_ATTEMPTS: usize = 4;
+type ChallengeBinding<'a> = Box<dyn FnOnce(&str) -> Vec<u8> + 'a>;
 
 pub(super) trait Clock: Send + Sync {
     fn now(&self) -> Instant;
@@ -188,7 +189,7 @@ impl MinecraftChallenges {
         profile: MinecraftUuid,
         name: MinecraftName,
         purpose: MinecraftPurpose,
-        binding: Option<Box<dyn FnOnce(&str) -> Vec<u8> + '_>>,
+        binding: Option<ChallengeBinding<'_>>,
     ) -> Result<IssuedChallenge, MinecraftError> {
         let mut state = self
             .shared
@@ -417,6 +418,38 @@ impl TestLimits {
     }
 }
 
+#[cfg(feature = "test-support")]
+impl MinecraftChallenges {
+    /// Inert online-provider fixture, unavailable in production builds.
+    pub fn test_profile(
+        server: ServerUuid,
+        account: super::MinecraftUuid,
+        name: super::MinecraftName,
+    ) -> Self {
+        struct Fake(super::MinecraftUuid, super::MinecraftName);
+        impl SessionProvider for Fake {
+            fn verify(
+                &self,
+                _: &super::MinecraftName,
+                _: &super::ServerHash,
+            ) -> Result<Option<super::provider::JoinedProfile>, MinecraftError> {
+                Ok(Some(super::provider::JoinedProfile {
+                    uuid: self.0,
+                    name: self.1.clone(),
+                }))
+            }
+        }
+        Self {
+            server,
+            shared: Arc::new(Shared::new(
+                Arc::new(Fake(account, name)),
+                Arc::new(MonotonicClock),
+                Limits::default(),
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,37 +500,5 @@ mod tests {
         assert!(bucket.charge(later));
         assert!(bucket.charge(later));
         assert!(!bucket.charge(later));
-    }
-}
-
-#[cfg(feature = "test-support")]
-impl MinecraftChallenges {
-    /// Inert online-provider fixture, unavailable in production builds.
-    pub fn test_profile(
-        server: ServerUuid,
-        account: super::MinecraftUuid,
-        name: super::MinecraftName,
-    ) -> Self {
-        struct Fake(super::MinecraftUuid, super::MinecraftName);
-        impl SessionProvider for Fake {
-            fn verify(
-                &self,
-                _: &super::MinecraftName,
-                _: &super::ServerHash,
-            ) -> Result<Option<super::provider::JoinedProfile>, MinecraftError> {
-                Ok(Some(super::provider::JoinedProfile {
-                    uuid: self.0,
-                    name: self.1.clone(),
-                }))
-            }
-        }
-        Self {
-            server,
-            shared: Arc::new(Shared::new(
-                Arc::new(Fake(account, name)),
-                Arc::new(MonotonicClock),
-                Limits::default(),
-            )),
-        }
     }
 }

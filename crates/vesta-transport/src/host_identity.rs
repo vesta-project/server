@@ -528,7 +528,7 @@ impl HostIdentity {
                 device_id,
             })
         } else if status.state == "awaiting_approval" {
-            Ok(LinkPollResponse::Pending(status))
+            Ok(LinkPollResponse::Pending(Box::new(status)))
         } else {
             Err(FAILED)
         }

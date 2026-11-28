@@ -123,23 +123,22 @@ pub fn browse(timeout: Duration) -> Result<Vec<DiscoveredHost>, mdns_sd::Error> 
                     .iter()
                     .map(|p| (p.key().to_string(), p.val().unwrap_or_default().to_vec()))
                     .collect::<Vec<_>>();
-                if let Ok(txt) = TxtRecord::parse(props) {
-                    if s.get_port() != 0
-                        && s.get_fullname()
-                            .eq_ignore_ascii_case(&format!("Vesta-{}.{}", txt.id, SERVICE_TYPE))
-                        && s.get_hostname().to_ascii_lowercase().ends_with(".local.")
-                        && !s.get_addresses().is_empty()
-                    {
-                        hosts.insert(
-                            txt.id.clone(),
-                            DiscoveredHost {
-                                txt,
-                                hostname: s.get_hostname().to_owned(),
-                                port: s.get_port(),
-                                addresses: s.get_addresses().iter().cloned().collect(),
-                            },
-                        );
-                    }
+                if let Ok(txt) = TxtRecord::parse(props)
+                    && s.get_port() != 0
+                    && s.get_fullname()
+                        .eq_ignore_ascii_case(&format!("Vesta-{}.{}", txt.id, SERVICE_TYPE))
+                    && s.get_hostname().to_ascii_lowercase().ends_with(".local.")
+                    && !s.get_addresses().is_empty()
+                {
+                    hosts.insert(
+                        txt.id.clone(),
+                        DiscoveredHost {
+                            txt,
+                            hostname: s.get_hostname().to_owned(),
+                            port: s.get_port(),
+                            addresses: s.get_addresses().iter().cloned().collect(),
+                        },
+                    );
                 }
             }
             Ok(ServiceEvent::ServiceRemoved(_, fullname)) => {

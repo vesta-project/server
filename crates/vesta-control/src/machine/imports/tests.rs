@@ -1048,7 +1048,8 @@ fn jar(path: PathBuf, entries: &[(&str, &[u8])]) {
 fn vanilla_server_jar_reports_its_embedded_version() {
     let temp = tempfile::tempdir().unwrap();
     let base = temp.path();
-    let cases: [(&str, Vec<(&str, &[u8])>, Option<&str>); 5] = [
+    type JarCase<'a> = (&'a str, Vec<(&'a str, &'a [u8])>, Option<&'a str>);
+    let cases: [JarCase<'_>; 5] = [
         (
             "modern",
             vec![

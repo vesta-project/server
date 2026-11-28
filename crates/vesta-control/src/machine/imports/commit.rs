@@ -255,25 +255,23 @@ impl ImportJobs {
 
         if let (Some(version), Some(kind)) =
             (&review.detected.minecraft_version, &review.detected.loader)
-        {
-            if let Ok(software) =
+            && let Ok(software) =
                 serde_json::from_value::<vesta_server_install::Software>(serde_json::json!(kind))
-            {
-                crate::software::created::seed(
-                    &dir,
-                    document.clone(),
-                    crate::software::Installation {
-                        software: Some(software),
-                        version: Some(version.clone()),
-                        build: None,
-                        loader_version: None,
-                        custom_jar: None,
-                        installation_id: "created".into(),
-                    },
-                    managed.artifacts.clone(),
-                )
-                .map_err(|_| JobError("configure_failed"))?;
-            }
+        {
+            crate::software::created::seed(
+                &dir,
+                document.clone(),
+                crate::software::Installation {
+                    software: Some(software),
+                    version: Some(version.clone()),
+                    build: None,
+                    loader_version: None,
+                    custom_jar: None,
+                    installation_id: "created".into(),
+                },
+                managed.artifacts.clone(),
+            )
+            .map_err(|_| JobError("configure_failed"))?;
         }
         self.set_phase(job_id, "applying", "register")?;
         self.register_once(job_id, server_id, name, port, &eula_account)?;
@@ -453,7 +451,8 @@ impl ImportJobs {
     /// The committed server's id and reserved game port, from the durable
     /// job row and its reservation (the same for imports and creates).
     fn committed(&self, c: &Connection, job_id: &str, kind: Kind) -> JobResult<Committed> {
-        let row: Option<(String, Option<String>, Option<String>, i64, Option<u16>)> = c
+        type CommittedRow = (String, Option<String>, Option<String>, i64, Option<u16>);
+        let row: Option<CommittedRow> = c
             .query_row(
                 "SELECT j.state,j.server_id,j.private,j.start_attempt,r.game_port FROM machine_import_jobs j
                  LEFT JOIN machine_import_reservations r ON r.job_id=j.job_id AND r.released=0

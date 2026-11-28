@@ -601,7 +601,8 @@ pub(crate) fn device_by_key_in(c: &Connection, key: &[u8; 32]) -> Result<Option<
     }
 }
 pub fn device_in(c: &Connection, id: Uuid) -> Result<Option<Device>> {
-    let row:Option<(String,String,Vec<u8>,i64,Option<i64>)>=c.query_row("SELECT account_id,name,public_key,created_at_ms,revoked_at_ms FROM machine_devices WHERE device_id=?1",[id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+    type DeviceRow = (String, String, Vec<u8>, i64, Option<i64>);
+    let row:Option<DeviceRow>=c.query_row("SELECT account_id,name,public_key,created_at_ms,revoked_at_ms FROM machine_devices WHERE device_id=?1",[id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
     row.map(|(account, name, key, created, revoked)| {
         Ok(Device {
             device_id: id,

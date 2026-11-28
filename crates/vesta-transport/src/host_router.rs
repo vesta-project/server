@@ -1,4 +1,8 @@
 //! Host authority and HTTP routing. No legacy bearer is accepted here.
+#![allow(
+    clippy::result_large_err,
+    reason = "early error replies are returned directly as HTTP responses"
+)]
 use super::*;
 use crate::host_identity::HostIdentity;
 use http::Method;
@@ -102,10 +106,10 @@ impl HostRouter {
     }
 
     fn worker_factory(&self, id: Uuid) -> Result<&WorkerFactory, JobError> {
-        if let Some((configured, factory)) = &self.configured_worker {
-            if *configured == id {
-                return Ok(factory.as_ref());
-            }
+        if let Some((configured, factory)) = &self.configured_worker
+            && *configured == id
+        {
+            return Ok(factory.as_ref());
         }
         self.imports
             .as_ref()
@@ -374,16 +378,13 @@ struct Application {
     session_peer_limiter: Mutex<PeerRateLimiter>,
     here_peer_limiter: Mutex<PeerRateLimiter>,
     here_host_limiter: Mutex<RateLimiter<()>>,
-    tickets: Mutex<
-        std::collections::HashMap<
-            String,
-            (zeroize::Zeroizing<String>, Uuid, u64, std::time::Instant),
-        >,
-    >,
+    tickets: Mutex<std::collections::HashMap<String, DownloadTicket>>,
     downloads: Arc<Downloads<vesta_control::pack_access::RealtimeSession>>,
     ownership: owners::Challenges,
     streams: Mutex<Vec<HostStream>>,
 }
+
+type DownloadTicket = (zeroize::Zeroizing<String>, Uuid, u64, std::time::Instant);
 
 struct HostStream {
     stop: watch::Sender<bool>,
@@ -1000,6 +1001,7 @@ impl Application {
             Err(_) => failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         }
     }
+    #[allow(clippy::too_many_arguments)]
     fn dispatch_sync(
         &self,
         method: &Method,
@@ -1054,42 +1056,41 @@ impl Application {
             }
             return routes::json(value);
         }
-        if matches!(*method, Method::GET | Method::HEAD) {
-            if let Some((id, asset)) = path
+        if matches!(*method, Method::GET | Method::HEAD)
+            && let Some((id, asset)) = path
                 .strip_prefix("/v1/servers/")
                 .and_then(|r| r.split_once('/'))
                 .filter(|(_, s)| s.starts_with("resource-packs/"))
-            {
-                let worker = Uuid::parse_str(id)
-                    .ok()
-                    .filter(|id| {
-                        state.server(*id).ok().flatten().is_some_and(|e| {
-                            !matches!(
-                                e.state,
-                                vesta_control::machine::registry::ServerState::Deleted
-                                    | vesta_control::machine::registry::ServerState::Disabled
-                            )
-                        })
+        {
+            let worker = Uuid::parse_str(id)
+                .ok()
+                .filter(|id| {
+                    state.server(*id).ok().flatten().is_some_and(|e| {
+                        !matches!(
+                            e.state,
+                            vesta_control::machine::registry::ServerState::Deleted
+                                | vesta_control::machine::registry::ServerState::Disabled
+                        )
                     })
-                    .and_then(|id| {
-                        self.router
-                            .workers
-                            .lock()
-                            .ok()?
-                            .iter()
-                            .find(|w| w.server_id() == id)
-                            .cloned()
-                    });
-                if let Some(handle) = worker.and_then(|w| w.public_resource_packs()) {
-                    return public_resource_packs::dispatch_handle(
-                        &handle,
-                        method,
-                        &format!("/{asset}"),
-                        self.downloads.global.clone(),
-                    );
-                }
-                return failure(StatusCode::NOT_FOUND, "not_found");
+                })
+                .and_then(|id| {
+                    self.router
+                        .workers
+                        .lock()
+                        .ok()?
+                        .iter()
+                        .find(|w| w.server_id() == id)
+                        .cloned()
+                });
+            if let Some(handle) = worker.and_then(|w| w.public_resource_packs()) {
+                return public_resource_packs::dispatch_handle(
+                    &handle,
+                    method,
+                    &format!("/{asset}"),
+                    self.downloads.global.clone(),
+                );
             }
+            return failure(StatusCode::NOT_FOUND, "not_found");
         }
         if headers.get_all("authorization").iter().count() > 1 {
             return failure(StatusCode::UNAUTHORIZED, "invalid_session");
@@ -1179,14 +1180,17 @@ impl Application {
                 };
             }
         }
-        if method == Method::GET && path.starts_with("/v1/host/links/") && pake.is_some() {
+        if method == Method::GET
+            && path.starts_with("/v1/host/links/")
+            && let Some(pake) = pake
+        {
             let Some(c) = connection else {
                 return failure(StatusCode::UNAUTHORIZED, "pairing_failed");
             };
             let Ok(id) = Uuid::parse_str(path.trim_start_matches("/v1/host/links/")) else {
                 return failure(StatusCode::BAD_REQUEST, "invalid_request");
             };
-            return output(identity.link_status(&c, pake.unwrap(), id));
+            return output(identity.link_status(&c, pake, id));
         }
         let Some(raw_token) = token else {
             return failure(StatusCode::UNAUTHORIZED, "invalid_session");
@@ -1549,7 +1553,7 @@ impl Application {
             return storage::dispatch(&self.router, method, path, bytes);
         }
         if path.starts_with("/v1/host/catalogue/") || path.starts_with("/v1/host/creates/") {
-            return creates::dispatch(&self.router, &device, method, path, query, &headers, bytes);
+            return creates::dispatch(&self.router, &device, method, path, query, headers, bytes);
         }
         if method == Method::PATCH && path == "/v1/host" {
             return match state.update_settings(Actor::Account(device.account_id), input!()) {

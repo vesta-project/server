@@ -150,25 +150,23 @@ pub struct Nearby {
 pub(crate) fn nearby(browser: &FolderBrowser, binding: &OwnerBinding, token: &str) -> Vec<Nearby> {
     let mut nearby = Vec::new();
     let mut cursor = None;
-    loop {
-        let Ok(page) = browser.list(
-            binding,
-            &super::browse::ListRequest {
-                folder_token: token.into(),
-                cursor,
-            },
-        ) else {
-            break;
-        };
+    while let Ok(page) = browser.list(
+        binding,
+        &super::browse::ListRequest {
+            folder_token: token.into(),
+            cursor,
+        },
+    ) {
         for entry in page.entries {
-            if entry.readable && entry.looks_like_server {
-                if let Some(folder_token) = entry.folder_token {
-                    nearby.push(Nearby {
-                        folder_token,
-                        path: format!("{}/{}", page.display_path.trim_end_matches('/'), entry.name),
-                        looks_like_server: true,
-                    });
-                }
+            if entry.readable
+                && entry.looks_like_server
+                && let Some(folder_token) = entry.folder_token
+            {
+                nearby.push(Nearby {
+                    folder_token,
+                    path: format!("{}/{}", page.display_path.trim_end_matches('/'), entry.name),
+                    looks_like_server: true,
+                });
             }
         }
         cursor = page.next_cursor;
@@ -274,17 +272,15 @@ pub fn inspect(
         "complete"
     };
 
-    if let Some(destination) = &request.destination {
-        match crate::files::native::volume_space(destination) {
-            Ok((available, _)) => {
-                report.destination_free_bytes = Some(available);
-                if report.size.complete
-                    && available < report.size.bytes.saturating_add(SPACE_MARGIN_BYTES)
-                {
-                    blockers.insert("insufficient_space");
-                }
-            }
-            Err(_) => {}
+    if let Some(available) = request.destination.as_deref().and_then(|destination| {
+        crate::files::native::volume_space(destination)
+            .ok()
+            .map(|(available, _)| available)
+    }) {
+        report.destination_free_bytes = Some(available);
+        if report.size.complete && available < report.size.bytes.saturating_add(SPACE_MARGIN_BYTES)
+        {
+            blockers.insert("insufficient_space");
         }
     }
     if report.detected.kind == "amp" {
@@ -394,7 +390,7 @@ pub(crate) fn inspect_path(
         jars.sort();
         jars
     };
-    let has = |e: &str| report.evidence.iter().any(|x| *x == e);
+    let has = |e: &str| report.evidence.contains(&e);
     for (name, present) in [
         ("server_properties", has("server_properties")),
         (
@@ -1239,10 +1235,10 @@ pub(crate) fn stopped_evidence(
         return Some("world_outside_source");
     }
     let world = source.join(world);
-    if let Ok(file) = crate::files::native::import_open(&world.join("session.lock"), false) {
-        if crate::files::native::import_locked(&file) {
-            return Some("source_recently_active");
-        }
+    if let Ok(file) = crate::files::native::import_open(&world.join("session.lock"), false)
+        && crate::files::native::import_locked(&file)
+    {
+        return Some("source_recently_active");
     }
     for dir in [
         source.join("logs"),

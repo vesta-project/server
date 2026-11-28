@@ -121,10 +121,10 @@ unsafe extern "system" fn window(
             0
         }
         WM_ENDSESSION => {
-            if wparam != 0 {
-                if let Some(state) = active() {
-                    state.notify_and_wait(ShutdownReason::SessionEnding);
-                }
+            if wparam != 0
+                && let Some(state) = active()
+            {
+                state.notify_and_wait(ShutdownReason::SessionEnding);
             }
             0
         }

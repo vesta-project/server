@@ -100,7 +100,7 @@ pub fn list(state: &HostState, actor: Actor, server: Uuid) -> crate::Result<Valu
     state.write(|c| {authority(c,actor,server,None)?;ensure(c)?;let mut q=c.prepare("SELECT id,role,created,expires,creator FROM machine_invites WHERE server=?1 AND revoked=0 AND expires>?2 AND uses<max_uses ORDER BY created,id LIMIT 100")?;
  let rows=q.query_map(params![server.to_string(),state.now_ms()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
  let invitations = rows.into_iter().map(|(id,role,created,expires,creator)| {
-     Ok(json!({"id":id,"role":super::roles::role_summary(c, server, &ServerRole::parse(&role)?.id())?,"created_at_ms":created,"expires_at_ms":expires,"created_by":creator}))
+     Ok(json!({"id":id,"role":super::roles::role_summary(c, server, ServerRole::parse(&role)?.id())?,"created_at_ms":created,"expires_at_ms":expires,"created_by":creator}))
  }).collect::<crate::Result<Vec<_>>>()?;
  Ok(json!({"invitations":invitations,"next_offset":null}))})
 }
@@ -119,10 +119,10 @@ pub fn revoke(state: &HostState, actor: Actor, server: Uuid, id: Uuid) -> crate:
         let grant = ServerRole::parse(&grant)?;
         // Existing administrator invitations can still be revoked by an owner.
         if grant == ServerRole::Admin {
-            if let Actor::Account(id) = actor {
-                if host_role_in(c, id)?.is_none() {
-                    return Err(reject(Code::Forbidden));
-                }
+            if let Actor::Account(id) = actor
+                && host_role_in(c, id)?.is_none()
+            {
+                return Err(reject(Code::Forbidden));
             }
         } else {
             authority(c, actor, server, Some(grant))?;
