@@ -190,8 +190,10 @@ mod tests {
     #[test]
     fn child() {
         let args: Vec<_> = std::env::args().collect();
-        if !args.iter().any(|s| s == "--exact")
-            || !args.iter().any(|s| s == "build_process::tests::child")
+        if !args.iter().any(|s| s == "--nocapture")
+            || !args
+                .windows(2)
+                .any(|pair| pair[0] == "--exact" && pair[1] == "build_process::tests::child")
         {
             return;
         }

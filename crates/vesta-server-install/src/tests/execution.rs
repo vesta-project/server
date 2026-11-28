@@ -28,7 +28,11 @@ pub(super) fn args(root: &Path, mode: &str, extra: &[&str]) -> Vec<String> {
 }
 fn fixture_values(name: &str) -> Option<Vec<String>> {
     let args: Vec<_> = std::env::args().collect();
-    if !args.iter().any(|v| v == "--exact") || !args.iter().any(|v| v == name) {
+    if !args.iter().any(|v| v == "--nocapture")
+        || !args
+            .windows(2)
+            .any(|pair| pair[0] == "--exact" && pair[1] == name)
+    {
         return None;
     }
     Some(
